@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
-from torch.nn import Sequential as Seq, Linear as Lin, ReLU, BatchNorm1d as BN
+from torch.nn import Sequential as Seq, Linear as Lin, ReLU, Conv1d, Dropout, BatchNorm1d as BN
 from torch_geometric.datasets import ModelNet
+from torch import Tensor
 import torch_geometric.transforms as T
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import PointConv, fps, radius, global_max_pool
@@ -9,7 +10,7 @@ from torch_cluster import knn
 from torch_geometric.nn.conv import MessagePassing
 from typing import Callable, Union, Optional
 from torch_geometric.typing import OptTensor, PairTensor, PairOptTensor, Adj
-from torch_geometric.nn.inits import reset
+from torch_geometric.nn.inits import reset, glorot, zeros
 
 class SAModule(torch.nn.Module):
     # ratio is sampling ratio
@@ -50,10 +51,17 @@ class GlobalSAModule(torch.nn.Module):
 
 # returns sequence of linear layers, relu activation, and batch normalization of specified depth and width
 def MLP(channels, batch_norm=True):
+
+    # the reason they're handling this with a linear layer, is because they break up the input tensor into position and batch seperately for radius function in MessagePassing module
     return Seq(*[
         Seq(Lin(channels[i - 1], channels[i]), ReLU(), BN(channels[i]))
         for i in range(1, len(channels))
     ])
+
+    # return Seq(*[
+    #     Seq(Conv1d(channels[i - 1], channels[i], 1, stride=1), ReLU(), BN(channels[i]))
+    #     for i in range(1, len(channels))
+    # ])
 
 # defines pointNet++ architecture
 # remember to put in training mode 
@@ -156,25 +164,110 @@ class DockPointNet_Module(MessagePassing):
             b = batch[0]
 
         # x[0] and x[1] are copied tensors of same input points
-        idx = fps(x[0], b, ratio=self.ratio)
-        row, col = radius(x[0], x[0][idx], self.r, b, b[idx], max_num_neighbors=self.max_k)
+        # point position data x and batch information b need to be seperated as input to radius function
+        # why this could not be instead handled inside of the function, I do not know
+        row, col = radius(x[0], x[1], self.r, b, b, max_num_neighbors=self.max_k)
         edge_index = torch.stack([col, row], dim=0)
 
         # propagate_type: (x: PairTensor)
+        # x.shape = (N,3)
         return self.propagate(edge_index, x=x, size=None)
 
     def message(self, x_i: Tensor, x_j: Tensor) -> Tensor:
-        return self.nn(torch.cat([x_i, x_j - x_i], dim=-1))
+        out = self.nn(torch.cat([x_i, x_j - x_i], dim=-1))
+        return out
+
+    def __repr__(self):
+        return '{}(nn={}, k={})'.format(self.__class__.__name__, self.nn,
+                                        self.max_k)
+
+class Att_DockPointNet_Module(MessagePassing):
+    r""" Combining the pointNet++ set abstraction and Dynamic Edge Convolution Layers
+    Args:
+        nn (torch.nn.Module): A neural network :math:`h_{\mathbf{\Theta}}` that
+            maps pair-wise concatenated node features :obj:`x` of shape
+            `:obj:`[-1, 2 * in_channels]` to shape :obj:`[-1, out_channels]`,
+            *e.g.* defined by :class:`torch.nn.Sequential`.
+        k (int): Max number of nearest neighbors.
+        aggr (string): The aggregation operator to use (:obj:`"add"`,
+            :obj:`"mean"`, :obj:`"max"`). (default: :obj:`"max"`)
+        num_workers (int): Number of workers to use for k-NN computation.
+            Has no effect in case :obj:`batch` is not :obj:`None`, or the input
+            lies on the GPU. (default: :obj:`1`)
+        **kwargs (optional): Additional arguments of
+            :class:`torch_geometric.nn.conv.MessagePassing`.
+    """
+    def __init__(self, in_channels, out_channels, head, nn: Callable, k: int, aggr: str = 'max', concat=True, bias=True, dropout = 0, **kwargs):
+        super(Att_DockPointNet_Module, self).__init__(aggr=aggr, flow='target_to_source', **kwargs)
+
+        self.nn = nn
+        self.max_k = k
+        # fps sampling ratio parameter
+        self.ratio = 0.5
+        # radius for ball sampling
+        self.r = 0.2
+
+        # determines if we concatenate output of heads prior to linear layer
+        self.concat = concat
+
+        # used to generate node embeddings prior to attention
+        # generates large tensor that will be split into given # of heads
+        self.weight = Parameter(torch.Tensor(in_channels, self.heads * out_channels))
+
+        if bias and concat:
+            self.bias = Parameter(torch.Tensor(out_channels))
+            self.linear = torch.nn.Linear(self.heads * out_channels, out_channels, bias)
+        elif bias and not concat:
+            self.bias = Parameter(torch.Tensor(out_channels))
+            self.linear = None
+        else:
+            self.register_parameter('bias', None)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        reset(self.nn)
+        glorot(self.weight)
+        zeros(self.bias)
+
+    def forward(
+            self, x: Union[Tensor, PairTensor],
+            batch: Union[OptTensor, Optional[PairTensor]] = None) -> Tensor:
+        
+        if isinstance(x, Tensor):
+            x: PairTensor = (x, x)
+        assert x[0].dim() == 2, \
+            'Static graphs not supported in `DockPointNet_Module`.'
+
+        b: PairOptTensor = (None, None)
+        if isinstance(batch, Tensor):
+            b = batch
+        elif isinstance(batch, tuple):
+            assert batch is not None
+            b = batch[0]
+
+        # x[0] and x[1] are copied tensors of same input points
+        # point position data x and batch information b need to be seperated as input to radius function
+        # why this could not be instead handled inside of the function, I do not know
+        row, col = radius(x[0], x[1], self.r, b, b, max_num_neighbors=self.max_k)
+        edge_index = torch.stack([col, row], dim=0)
+
+        # propagate_type: (x: PairTensor)
+        # x.shape = (N,3)
+        return self.propagate(edge_index, x=x, size=None)
+
+    def message(self, x_i: Tensor, x_j: Tensor) -> Tensor:
+        out = self.nn(torch.cat([x_i, x_j - x_i], dim=-1))
+        return out
 
     def __repr__(self):
         return '{}(nn={}, k={})'.format(self.__class__.__name__, self.nn,
                                         self.max_k)
 
 
-
 class DockPointNet(torch.nn.Module):
     def __init__(self, out_channels, k=20, aggr='max'):
-        super().__init__()
+        super().__init__() 
 
         # self.tnet = MLP([3, 64, 64, 3])
         self.conv1 = DockPointNet_Module(MLP([2 * 3, 64, 64, 64]), k, aggr)
@@ -186,9 +279,14 @@ class DockPointNet(torch.nn.Module):
             Lin(256, out_channels))
 
     def forward(self, data):
+        '''
+            data is expected to be a pytorch_geometric Batch object Batch(batch=[2048], pos=[2048, 3], y=[8])  
+        '''
+
         pos, batch = data.pos, data.batch
 
         # x0 = self.tnet(pos)
+        # pos and batch parts are passed as seperate args for the radius function docking module
         x1 = self.conv1(pos, batch)
         x2 = self.conv2(x1, batch)
         out = self.lin1(torch.cat([x1, x2], dim=1))
