@@ -139,8 +139,6 @@ class DockPointNet_Module(MessagePassing):
         self.max_k = k
         self.num_workers = num_workers
         self.reset_parameters()
-        # fps sampling ratio parameter
-        self.ratio = 0.5
         # radius for ball sampling
         self.r = 0.2
 
@@ -174,6 +172,7 @@ class DockPointNet_Module(MessagePassing):
         return self.propagate(edge_index, x=x, size=None)
 
     def message(self, x_i: Tensor, x_j: Tensor) -> Tensor:
+        # TODO do reshape before and after
         out = self.nn(torch.cat([x_i, x_j - x_i], dim=-1))
         return out
 
@@ -197,48 +196,41 @@ class Att_DockPointNet_Module(MessagePassing):
         **kwargs (optional): Additional arguments of
             :class:`torch_geometric.nn.conv.MessagePassing`.
     """
-    def __init__(self, in_channels, out_channels, head, nn: Callable, k: int, aggr: str = 'max', concat=True, bias=True, dropout = 0, **kwargs):
+    def __init__(self, in_channels, out_channels, head, k: int, aggr: str = 'max', dropout = 0, **kwargs):
         super(Att_DockPointNet_Module, self).__init__(aggr=aggr, flow='target_to_source', **kwargs)
 
-        self.nn = nn
         self.max_k = k
-        # fps sampling ratio parameter
-        self.ratio = 0.5
         # radius for ball sampling
         self.r = 0.2
-
-        # determines if we concatenate output of heads prior to linear layer
-        self.concat = concat
 
         # used to generate node embeddings prior to attention
         # generates large tensor that will be split into given # of heads
         self.weight = Parameter(torch.Tensor(in_channels, self.heads * out_channels))
-
-        if bias and concat:
-            self.bias = Parameter(torch.Tensor(out_channels))
-            self.linear = torch.nn.Linear(self.heads * out_channels, out_channels, bias)
-        elif bias and not concat:
-            self.bias = Parameter(torch.Tensor(out_channels))
-            self.linear = None
-        else:
-            self.register_parameter('bias', None)
+        self.linear = torch.nn.Linear(self.heads * out_channels, out_channels, bias)
 
         self.reset_parameters()
 
     def reset_parameters(self):
-        reset(self.nn)
         glorot(self.weight)
-        zeros(self.bias)
 
-    def forward(
-            self, x: Union[Tensor, PairTensor],
-            batch: Union[OptTensor, Optional[PairTensor]] = None) -> Tensor:
+    def add_self_loops(self, edge_index, edge_attr = None):
+
+        num_nodes = edge_index.max().item() + 1
+
+        loop_index = torch.arange(0, num_nodes, dtype=torch.long, device=edge_index.device)
+        loop_index = loop_index.unsqueeze(0).repeat(2, 1)
+
+        if edge_attr is not None:
+
+            loop_attr = torch.ones((num_nodes, self.heads ), device= edge_index.device)
+            edge_attr = torch.cat([edge_attr, loop_attr], dim=0)
+
+        edge_index = torch.cat([edge_index, loop_index], dim=1)
+        del loop_index
+        return edge_index, edge_attr
+
+    def forward(self, x: Union[Tensor, PairTensor], batch: Union[OptTensor, Optional[PairTensor]] = None, edge_attr=None, return_attention_weights=False) -> Tensor:
         
-        if isinstance(x, Tensor):
-            x: PairTensor = (x, x)
-        assert x[0].dim() == 2, \
-            'Static graphs not supported in `DockPointNet_Module`.'
-
         b: PairOptTensor = (None, None)
         if isinstance(batch, Tensor):
             b = batch
@@ -248,21 +240,90 @@ class Att_DockPointNet_Module(MessagePassing):
 
         # x[0] and x[1] are copied tensors of same input points
         # point position data x and batch information b need to be seperated as input to radius function
-        # why this could not be instead handled inside of the function, I do not know
-        row, col = radius(x[0], x[1], self.r, b, b, max_num_neighbors=self.max_k)
+        row, col = radius(x, x, self.r, b, b, max_num_neighbors=self.max_k)
         edge_index = torch.stack([col, row], dim=0)
 
-        # propagate_type: (x: PairTensor)
-        # x.shape = (N,3)
-        return self.propagate(edge_index, x=x, size=None)
+        # add self loops for all nodes
+        # remove_self_loops is included before, so there are no duplicates
+        edge_index, edge_attr = remove_self_loops(edge_index, edge_attr= edge_attr)
+        edge_index, edge_attr = self.add_self_loops(edge_index,edge_attr)
 
-    def message(self, x_i: Tensor, x_j: Tensor) -> Tensor:
-        out = self.nn(torch.cat([x_i, x_j - x_i], dim=-1))
-        return out
+        out = self.propagate(edge_index, x=x, edge_attr=edge_attr, return_attention_weights=return_attention_weights)
+
+        if return_attention_weights:
+            alpha, self.alpha = self.alpha, None
+            return out, alpha
+        else:
+            return out
+
+    # x.shape = (N,3)
+    # x_i is target, x_j is source (i.e. messages coming to x_i from x_j)
+    def message(self, edge_index_i, x_i: Tensor, x_j: Tensor, edge_attr, return_attention_weights) -> Tensor:
+
+        # TODO do reshape before and after in update to convert back for torch geometric
+
+        # get node latent embeddings
+        x_i = torch.matmul(x_i, self.weight)
+        x_j = torch.matmul(x_j, self.weight)
+
+        # Query: center/target node embeddings
+        # reshape tensor for # of heads
+        x_i = x_i.view(-1, self.heads, self.out_channels)
+
+        # Key: source/neighbor node embeddings
+        # reshape tensor for # of heads
+        x_j = x_j.view(-1, self.heads, self.out_channels)
+
+        # dim 0 is batch, so transpose on dim 1 head and dim 2 features
+        # contiguous makes x_j_t an in memory tensor containing the data from x_j
+        x_j_t = x_j.transpose(1, 2).contiguous()
+
+        # batch matrix multiply
+        # outputs (b,head,1) (i.e. raw how much to listen to each head)
+        attention_scores = torch.bmm(x_i, x_j_t).sum(dim=-1)
+
+        # scale attention scores by dimensionality of embedding channels
+        attention_scores.mul_(1.0 / torch.sqrt(torch.tensor(self.out_channels, dtype=torch.float, device= x_i.device)))
+
+        # how much to listen to each head 0 to 1 scale
+        alpha = softmax(attention_scores, edge_index_i, size_i)
+
+        if return_attention_weights:
+            self.alpha = alpha
+
+        # Sample attention coefficients stochastically.
+        alpha = F.dropout(alpha, p=self.dropout, training=self.training)
+
+        # edge_attr is defined by distance between points
+        # edge embedding
+        # apply distance embeddings to neighbors
+        if edge_attr is not None:
+            # scale edge attr
+            # 1e-16 is smoothing constant
+            edge_attr = 1 / (edge_attr.view(-1, self.heads, 1) + 1e-16)
+            edge_attr = torch.matmul(edge_attr, self.edge_weight)
+            x_j = x_j * alpha.view(-1, self.heads, 1) * edge_attr
+            del alpha, attention_scores, x_j_t
+            return x_j, attention_scores
+        else:
+            # since we're assigning attention values by entire heads, chunks of the feature vector are weighted equally instead of feature-wise
+            x_j = x_j * alpha.view(-1, self.heads, 1)
+            del alpha, attention_scores, x_j_t
+            return x_j
+    
+    # gets the output of aggregation procedure (defined at initialization)
+    # aggr_out is (b,heads,features)
+    def update(self, aggr_out):
+        
+        aggr_out = aggr_out.view(-1, self.heads * self.out_channels)
+        aggr_out = self.linear(aggr_out)
+
+        return aggr_out
 
     def __repr__(self):
-        return '{}(nn={}, k={})'.format(self.__class__.__name__, self.nn,
-                                        self.max_k)
+        return '{}({}, {})'.format(self.__class__.__name__,
+                                             self.in_channels,
+                                             self.out_channels)
 
 
 class DockPointNet(torch.nn.Module):

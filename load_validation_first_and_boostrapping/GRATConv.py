@@ -95,7 +95,7 @@ class GRATConv(MessagePassing):
         if torch.is_tensor(x):
             x = torch.matmul(x, self.weight)
         else:
-            # TODO what special case does this handle?
+            # for Pair Tensor
             x = (None if x[0] is None else torch.matmul(x[0], self.weight),
                  None if x[1] is None else torch.matmul(x[1], self.weight))
 
@@ -141,7 +141,8 @@ class GRATConv(MessagePassing):
         # Sample attention coefficients stochastically.
         alpha = F.dropout(alpha, p=self.dropout, training=self.training)
 
-        # TODO ask Fei about learned distance embeddings
+        # edge_attr is defined by distance between points
+        # edge embedding
         # apply distance embeddings to neighbors
         if edge_attr is not None:
             # scale edge attr
@@ -152,7 +153,6 @@ class GRATConv(MessagePassing):
             del alpha, attention_scores, x_j_t
             return x_j, attention_scores
         else:
-            # TODO ask Fei about this point
             # since we're assigning attention values by entire heads, chunks of the feature vector are weighted equally instead of feature-wise
             x_j = x_j * alpha.view(-1, self.heads, 1)
             del alpha, attention_scores, x_j_t
@@ -167,7 +167,7 @@ class GRATConv(MessagePassing):
         else:
             aggr_out = aggr_out.mean(dim=1)
 
-        # TODO what is purpose of this bias
+        # TODO what is purpose of this bias: change this to only work for yes bias, no concat
         if self.bias is not None:
             aggr_out = aggr_out + self.bias
         return aggr_out
