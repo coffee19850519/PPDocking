@@ -1,10 +1,11 @@
 import torch
 import torch.nn.functional as F
-from torch.nn import Sequential as Seq, Linear as Lin, ReLU, Conv1d, Dropout, BatchNorm1d as BN
+from torch.nn import Sequential as Seq, Linear as Lin, Parameter, ReLU, Conv1d, Dropout, BatchNorm1d as BN
 from torch_geometric.datasets import ModelNet
 from torch import Tensor
 import torch_geometric.transforms as T
 from torch_geometric.data import DataLoader
+from torch_geometric.utils import remove_self_loops, softmax
 from torch_geometric.nn import PointConv, fps, radius, global_max_pool
 from torch_cluster import knn
 from torch_geometric.nn.conv import MessagePassing
@@ -169,9 +170,16 @@ class DockPointNet_Module(MessagePassing):
 
         # propagate_type: (x: PairTensor)
         # x.shape = (N,3)
+        print('edge index')
+        print(edge_index.shape)
         return self.propagate(edge_index, x=x, size=None)
 
     def message(self, x_i: Tensor, x_j: Tensor) -> Tensor:
+
+        print('xi')
+        print(x_i.shape)
+        print('xj')
+        print(x_j.shape)
         # TODO do reshape before and after
         out = self.nn(torch.cat([x_i, x_j - x_i], dim=-1))
         return out
@@ -196,10 +204,14 @@ class Att_DockPointNet_Module(MessagePassing):
         **kwargs (optional): Additional arguments of
             :class:`torch_geometric.nn.conv.MessagePassing`.
     """
-    def __init__(self, in_channels, out_channels, head, k: int, aggr: str = 'max', dropout = 0, **kwargs):
+    def __init__(self, in_channels, out_channels, head, k: int, aggr: str = 'max', dropout = 0, bias=True, **kwargs):
         super(Att_DockPointNet_Module, self).__init__(aggr=aggr, flow='target_to_source', **kwargs)
 
         self.max_k = k
+        self.heads = head
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.dropout = dropout
         # radius for ball sampling
         self.r = 0.2
 
@@ -260,8 +272,6 @@ class Att_DockPointNet_Module(MessagePassing):
     # x_i is target, x_j is source (i.e. messages coming to x_i from x_j)
     def message(self, edge_index_i, x_i: Tensor, x_j: Tensor, edge_attr, return_attention_weights) -> Tensor:
 
-        # TODO do reshape before and after in update to convert back for torch geometric
-
         # get node latent embeddings
         x_i = torch.matmul(x_i, self.weight)
         x_j = torch.matmul(x_j, self.weight)
@@ -286,7 +296,7 @@ class Att_DockPointNet_Module(MessagePassing):
         attention_scores.mul_(1.0 / torch.sqrt(torch.tensor(self.out_channels, dtype=torch.float, device= x_i.device)))
 
         # how much to listen to each head 0 to 1 scale
-        alpha = softmax(attention_scores, edge_index_i, size_i)
+        alpha = softmax(attention_scores, edge_index_i)
 
         if return_attention_weights:
             self.alpha = alpha
@@ -298,6 +308,7 @@ class Att_DockPointNet_Module(MessagePassing):
         # edge embedding
         # apply distance embeddings to neighbors
         if edge_attr is not None:
+
             # scale edge attr
             # 1e-16 is smoothing constant
             edge_attr = 1 / (edge_attr.view(-1, self.heads, 1) + 1e-16)
@@ -306,8 +317,13 @@ class Att_DockPointNet_Module(MessagePassing):
             del alpha, attention_scores, x_j_t
             return x_j, attention_scores
         else:
+
             # since we're assigning attention values by entire heads, chunks of the feature vector are weighted equally instead of feature-wise
             x_j = x_j * alpha.view(-1, self.heads, 1)
+
+            # reshape for the library's automatic aggregation
+            x_j = x_j.view(-1, self.heads * self.out_channels)
+
             del alpha, attention_scores, x_j_t
             return x_j
     
@@ -315,7 +331,6 @@ class Att_DockPointNet_Module(MessagePassing):
     # aggr_out is (b,heads,features)
     def update(self, aggr_out):
         
-        aggr_out = aggr_out.view(-1, self.heads * self.out_channels)
         aggr_out = self.linear(aggr_out)
 
         return aggr_out
@@ -330,14 +345,18 @@ class DockPointNet(torch.nn.Module):
     def __init__(self, out_channels, k=20, aggr='max'):
         super().__init__() 
 
-        # self.tnet = MLP([3, 64, 64, 3])
-        self.conv1 = DockPointNet_Module(MLP([2 * 3, 64, 64, 64]), k, aggr)
-        self.conv2 = DockPointNet_Module(MLP([2 * 64, 128]), k, aggr)
-        self.lin1 = MLP([128 + 64, 1024])
 
+        # self.conv1 = DockPointNet_Module(MLP([2 * 3, 64, 64, 64]), k, aggr)
+        # self.conv2 = DockPointNet_Module(MLP([2 * 64, 128]), k, aggr)
+        # self.lin1 = MLP([128 + 64, 1024])
+
+
+        self.conv1 = Att_DockPointNet_Module(3,27,9,k=k)
+        self.conv2 = Att_DockPointNet_Module(27,64,9,k=k)
+        self.lin1 = MLP([64+27, 128])
         self.mlp = Seq(
-            MLP([1024, 512]), Dropout(0.5), MLP([512, 256]), Dropout(0.5),
-            Lin(256, out_channels))
+            MLP([128, 128]), Dropout(0.5), MLP([128, 128]), Dropout(0.5),
+            Lin(128, out_channels))
 
     def forward(self, data):
         '''
@@ -346,11 +365,24 @@ class DockPointNet(torch.nn.Module):
 
         pos, batch = data.pos, data.batch
 
-        # x0 = self.tnet(pos)
-        # pos and batch parts are passed as seperate args for the radius function docking module
+        # print('pos')
+        # print(pos.shape)
+
         x1 = self.conv1(pos, batch)
         x2 = self.conv2(x1, batch)
         out = self.lin1(torch.cat([x1, x2], dim=1))
         out = global_max_pool(out, batch)
         out = self.mlp(out)
         return F.log_softmax(out, dim=1)
+
+        # # x0 = self.tnet(pos)
+        # # pos and batch parts are passed as seperate args for the radius function docking module
+        # x1 = self.conv1(pos, batch)
+        # x2 = self.conv2(x1, batch)
+        # out = self.lin1(torch.cat([x1, x2], dim=1))
+        # out = global_max_pool(out, batch)
+        # out = self.mlp(out)
+        # return F.log_softmax(out, dim=1)
+
+
+
