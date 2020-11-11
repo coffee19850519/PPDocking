@@ -218,13 +218,15 @@ class SAModule(torch.nn.Module):
 # TODO: if data is not sequential per protein: per protein sort, save sorted indeces, run below, then revert sort
 def global_index_residue(residue_list_batch, decoy_list, device):
 
-    # decoy_index = set(batch)
     full_residue_number_list = []
-    residue_index_batch = []
+    residue_index_batch= []
+    residue_to_decoy_batch = []
     #compose the full residue number for all atoms in batch
     for decoy_idx, decoy in enumerate(decoy_list):
         for residue_number in residue_list_batch[decoy_idx]:
             full_residue_number_list.append(decoy + '.' + residue_number)
+        #set the same index for all residues in the same one decoy
+        residue_to_decoy_batch.extend(np.repeat(decoy_idx, len(set(residue_list_batch[decoy_idx]))).tolist())
 
     #initialize the variables needed in statment
     current_res_index = 0
@@ -236,20 +238,11 @@ def global_index_residue(residue_list_batch, decoy_list, device):
             current_residue_number = full_residue_number
 
         residue_index_batch.append(current_res_index)
+
     del full_residue_number_list, current_res_index, current_residue_number
-            #
-            # # at start set temp_res to first residue
-            # if not torch.is_tensor(temp_res):
-            #     temp_res = residue_list_batch[atom_idx]
-            #
-            # if not torch.eq(temp_res, current_res):
-            #     res_index += 1
-            #     temp_res = current_res
-            #
-            # residue_index.append(res_index)
-            #
-            # b_res_num[x] = res_index
-    return torch.tensor(residue_index_batch, dtype= torch.long, device= device)
+
+    return torch.tensor(residue_index_batch, dtype= torch.long, device= device),\
+           torch.tensor(residue_to_decoy_batch, dtype= torch.long, device= device)
 
 
 def organize_by_correspondence(x, residue_list, decoy_list,  correspondence):
@@ -265,9 +258,12 @@ def organize_by_correspondence(x, residue_list, decoy_list,  correspondence):
     for sample_idx in range(len(decoy_list)):
 
         current_correspondence = correspondence[sample_idx]
-        unique_residue_num = set(residue_list[sample_idx])
-        for residue_num in unique_residue_num:
+        #get uniform residue number and keep their orders for each decoy
+        # cannot use set() to remove duplicated ones, may change their orders
+        for residue_num in {}.fromkeys(residue_list[sample_idx]).keys():
             full_residue_list.append(decoy_list[sample_idx] + '.' + residue_num)
+
+
         for res_idx in range(len(current_correspondence)):
             all_source_residue_index.append(decoy_list[sample_idx] + '.' +  current_correspondence[res_idx][0])
             all_target_residue_index.append(decoy_list[sample_idx] + '.' + current_correspondence[res_idx][1])
@@ -302,17 +298,17 @@ class DockPointNet(torch.nn.Module):
         # self.conv1 = DynamicEdgeConv(MLP([2 * 3, 64]), 20)
         # self.conv2 = DynamicEdgeConv(MLP([2 * 64, 256]), 20)
 
-        self.conv1 = SAModule(MLP([3 + in_channels, 64, 128]), 5, 0.8)
-        self.conv2 = SAModule(MLP([3 + in_channels, 64, 128]), 8.5, 0.8)
+        self.conv1 = SAModule(MLP([3 + in_channels, 64]), 5, 0.8)
+        # self.conv2 = SAModule(MLP([3 + in_channels, 64, 128]), 8.5, 0.8)
         # self.conv3 = SAModule(MLP([3 + 128, 256]), 8.5, 0.8)
         # self.conv3 = SAModule(MLP([128 + 3, 256]), 0.4, 0.8)
-        # self.res_conv1 = SAModule(MLP([3 + 64, 128, 256]), 5, 0.8)
+        self.res_conv1 = SAModule(MLP([3 + 64, 128]), 5, 0.8)
         # self.res_conv2 = SAModule(MLP([3 + 128, 64]), 8.5, 0.8)
 
-        self.lin1 = Lin(256, 128)
+        self.lin1 = Lin(128, 64)
         # self.lin2 = Lin(256, 128)
-        self.lin2 = Lin(128, 128)
-        self.loss = CosineEmbeddingLoss()
+        self.lin2 = Lin(64, 64)
+        self.loss = CosineEmbeddingLoss(reduction='none')
         # self.mlp = Seq(
         #     MLP([1024, 512]), Dropout(0.5), MLP([512, 256]), Dropout(0.5),
         #     Lin(256, out_channels))
@@ -329,26 +325,36 @@ class DockPointNet(torch.nn.Module):
         # x = self.conv2(x,  pos, batch)
         # x3 = self.conv3(*x2)
         x1 = self.conv1(x, pos, batch)
-        x2 = self.conv2(x, pos, batch)
+        # x2 = self.conv2(x, pos, batch)
         x1, pos1, batch1 = x1
+
+        residue_index_batch, residue_to_decoy_batch = global_index_residue(residue_list, decoy_list, x.device)
+        res_x = global_mean_pool(x1, residue_index_batch)
+        res_pos = global_mean_pool(pos, residue_index_batch)
+
+        x2 = self.res_conv1(res_x, res_pos, residue_to_decoy_batch)
         x2, pos2, batch2 = x2
-        # res_pos = global_mean_pool(pos, residue_index_batch)
 
-        # x2 = self.res_conv1(res_x, res_pos, residue_index_batch)
 
-        residue_index_batch = global_index_residue(residue_list, decoy_list, x.device)
-        res_x = global_mean_pool(torch.cat([x1, x2], dim=1), residue_index_batch)
         # x3 = self.conv3(*x2)
 
-        x = torch.relu(self.lin1(res_x))
+        x = torch.relu(self.lin1(x2))
         x = F.dropout(x, p=0.2, training=self.training)
         x_s, x_t, y = organize_by_correspondence(self.lin2(x), residue_list, decoy_list, correspondence)
         # x = torch.relu(self.lin2(x))
         # x = F.dropout(x, p=0.2, training=self.training)
+        unweighted_loss = self.loss(x_s, x_t, y)
+        #pos_labels will locate the positive correspondence pairs
+        pos_labels = torch.where(y != 1, torch.zeros_like(y), y)
+        neg_labels = 1 - pos_labels
+        # calculate class weights according to ground truth distribution
+        pos_weights = torch.sum(neg_labels, dim= 0) / torch.sum(pos_labels,dim= 0)
+        loss = torch.mean((pos_labels * pos_weights + neg_labels * 1) * unweighted_loss)
+        del unweighted_loss, pos_labels, neg_labels, pos_weights
         if self.training:
-            return self.loss(x_s, x_t, y), y
+            return loss, y
         else:
-            return self.loss(x_s, x_t, y), torch.cosine_similarity(x_s, x_t), y
+            return loss, torch.cosine_similarity(x_s, x_t), y
 
 
 
