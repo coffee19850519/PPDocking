@@ -1,0 +1,16 @@
+scipy==1.4.1
+torch==1.5.0
+torch_cluster==1.5.7
+ssbio==0.9.9.8.post1
+bio==0.1.0
+numpy==1.18.4
+torch_sparse==0.6.7
+networkx==2.1
+pdb2sql==0.2.5
+tqdm==4.46.0
+pandas==1.0.3
+torch_scatter==2.0.5
+matplotlib==2.2.2
+rdkit==2009.Q1-1
+scikit_learn==0.23.2
+torch_geometric==1.6.1
