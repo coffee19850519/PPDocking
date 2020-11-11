@@ -141,8 +141,13 @@ def train_classification(args, model, fold, model_save_folder, train_patch_size,
 
         # save training details into csv file
         df_train_summary = pd.DataFrame(summary)
-        df_train_summary.to_csv(os.path.join(model_save_folder, r'train_summary.csv'), index=False, mode='a')
+        if epoch == 1 and fold == 0:
+            df_train_summary.to_csv(os.path.join(model_save_folder, r'train_summary.csv'), index=False, mode='a')
+        else:
+            df_train_summary.to_csv(os.path.join(model_save_folder, r'train_summary.csv'), header=False, index=False,
+                                    mode='a')
         del df_train_summary
+
 
     del val_dataset, val_loader, train_loader, train_dataset
     return model, lr
