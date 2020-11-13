@@ -2,18 +2,20 @@ import os.path as osp
 
 import torch
 import torch.nn.functional as F
-from torch.nn import Sequential as Seq, Dropout, Conv2d,Conv1d, ReLU, Linear as Lin, LeakyReLU, BatchNorm1d as BN, LayerNorm, Embedding,CosineEmbeddingLoss
+from torch.nn import Sequential as Seq, Dropout, Conv2d,Conv1d, Linear as Lin, ReLU, Tanh, BatchNorm1d as BN, LayerNorm, Embedding,CosineEmbeddingLoss
 from torch_geometric.datasets import  MNISTSuperpixels
 import torch_geometric.transforms as T
 from torch_geometric.data import DataLoader
-from torch_geometric.nn import global_max_pool,global_mean_pool, radius, fps, DynamicEdgeConv,PointConv
+from torch_geometric.nn import global_max_pool,global_add_pool, global_mean_pool, radius, fps, DynamicEdgeConv,PointConv, GINEConv
 from torch import Tensor
 from torch_sparse import SparseTensor, set_diag
+from PyG_Experiments.GCNE_net import gcn_norm
 from torch_geometric.utils import remove_self_loops, add_self_loops
 from torch_geometric.nn.conv import MessagePassing
 from typing import Callable, Union, Optional
 from torch_geometric.typing import OptTensor, PairTensor, PairOptTensor, Adj
-from torch_geometric.nn.inits import reset
+from torch_geometric.nn.inits import reset, glorot, zeros
+
 from point_cloud.data_convertor import PPDocking_point_cloud
 from tqdm import tqdm
 from torch_cluster import knn
@@ -105,17 +107,20 @@ class DockPointNet_Module(MessagePassing):
 # returns sequence of linear layers, relu activation, and batch normalization of specified depth and width
 def MLP(channels):
     return Seq(*[
-        Seq(Lin(channels[i - 1], channels[i]), ReLU(), Dropout(0.2))
+        Seq(Lin(channels[i - 1], channels[i]), ReLU(), LayerNorm(channels[i]), Dropout(0.5))
         for i in range(1, len(channels))
     ])
 
 class SAModule(torch.nn.Module):
-    def __init__(self,  feature_nn,  r, ratio):
+    def __init__(self,  feature_nn,  global_nn , r, aggr):
         super(SAModule, self).__init__()
         # self.ratio = ratio
         # self.r = r
         self.k = r
-        self.conv = PointConv(feature_nn)
+        self.conv = PointConv(feature_nn, global_nn, aggr= aggr)
+
+    def reset_parameters(self):
+        self.conv.reset_parameters()
 
     def forward(self, x, pos, batch):
         # idx = fps(pos, batch, ratio=self.ratio)
@@ -125,7 +130,7 @@ class SAModule(torch.nn.Module):
                           max_num_neighbors=64)
         edge_index = torch.stack([col, row], dim=0)
 
-        # edge_index = knn(pos, pos[idx], self.k, batch, batch[idx])
+        # edge_index = knn(pos, pos, self.k, batch, batch)
         x = self.conv(x, (pos, pos), edge_index)
         # x = self.conv(x, (pos, pos[idx]), edge_index)
         # pos, batch = pos[idx], batch[idx]
@@ -225,7 +230,7 @@ def global_index_residue(residue_list_batch, decoy_list, device):
     for decoy_idx, decoy in enumerate(decoy_list):
         for residue_number in residue_list_batch[decoy_idx]:
             full_residue_number_list.append(decoy + '.' + residue_number)
-        #set the same index for all residues in the same one decoy
+        #set the same index for all residues in a same decoy
         residue_to_decoy_batch.extend(np.repeat(decoy_idx, len(set(residue_list_batch[decoy_idx]))).tolist())
 
     #initialize the variables needed in statment
@@ -285,76 +290,152 @@ def organize_by_correspondence(x, residue_list, decoy_list,  correspondence):
     return x_s, x_t, torch.tensor(all_ground_truth_list, dtype= torch.float,device= x.device)
 
 
+
+
+class GCNEConv(MessagePassing):
+
+    def __init__(self, in_channels: int, out_channels: int, edge_channels: int,
+                 improved: bool = False,  **kwargs):
+
+        super(GCNEConv, self).__init__(aggr='add', **kwargs)
+
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.improved = improved
+        self.edge_channels = edge_channels
+        self.weight = torch.nn.Parameter(torch.Tensor(in_channels, out_channels))
+        self.bias = torch.nn.Parameter(torch.Tensor(out_channels))
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        zeros(self.bias)
+        glorot(self.weight)
+
+    def forward(self, x: Tensor, edge_index: Adj,
+                edge_attr:Tensor,
+                edge_weight: OptTensor = None) -> Tensor:
+
+        if isinstance(edge_index, Tensor):
+            edge_index, edge_weight = gcn_norm(  # yapf: disable
+            edge_index, edge_weight, x.size(self.node_dim),
+            self.improved, True, dtype=x.dtype)
+
+        elif isinstance(edge_index, SparseTensor):
+            edge_index = gcn_norm(  # yapf: disable
+                edge_index, edge_weight, x.size(self.node_dim),
+                self.improved, True, dtype=x.dtype)
+
+        # add self-loop edge attr
+        self_loop_attr = torch.zeros(x.size(0), self.edge_channels)
+        self_loop_attr = self_loop_attr.to(edge_attr.device).to(edge_attr.dtype)
+        edge_attr = torch.cat((edge_attr, self_loop_attr), dim=0)
+
+        # propagate_type: (x: Tensor, edge_weight: OptTensor)
+        out = self.propagate(edge_index, x=x, edge_weight=edge_weight, edge_attr= edge_attr,
+                             size=None)
+
+        return out
+
+    def message(self, x_i: Tensor, x_j: Tensor, edge_weight: Tensor, edge_attr: Tensor) -> Tensor:
+
+        x_j = torch.matmul(torch.cat([x_j, edge_attr], dim=1) , self.weight)
+        return edge_weight.view(-1, 1) * x_j + self.bias
+
+
+
+    def __repr__(self):
+        return '{}({}, {})'.format(self.__class__.__name__, self.in_channels,
+                                   self.out_channels)
+
+
 class DockPointNet(torch.nn.Module):
-    def __init__(self, in_channels, out_channels):
+    def __init__(self, in_channels, edge_dim, out_channels):
         super().__init__()
 
+        # point-cloud layers for atomic non-bond embeddings
         # self.tnet = MLP([3, 64, 64, 3])
-        # self.conv1 = DockPointNet_Module(MLP([in_channels, 64]), k = 10, aggr= aggr)
-        # self.conv2 = DockPointNet_Module(MLP([2 * 64, 128]),  k = 10, aggr= aggr)
-        # self.conv3 = DockPointNet_Module(MLP([2 * 128, 256]),  k = 10, aggr= aggr)
-        # self.embed_layer = Embedding(in_channels, 1)
+        self.conv1 = SAModule(MLP([3 + in_channels, 64]), None, 0.2, aggr= 'add')
 
-        # self.conv1 = DynamicEdgeConv(MLP([2 * 3, 64]), 20)
-        # self.conv2 = DynamicEdgeConv(MLP([2 * 64, 256]), 20)
+        #GINE conv layers for atomic bond embeddings
+        self.gcn1 = GCNEConv(in_channels + edge_dim, 64, edge_dim)
+        self.atom_embed_layers = MLP([64, 64])
 
-        self.conv1 = SAModule(MLP([3 + in_channels, 64]), 5, 0.8)
-        # self.conv2 = SAModule(MLP([3 + in_channels, 64, 128]), 8.5, 0.8)
-        # self.conv3 = SAModule(MLP([3 + 128, 256]), 8.5, 0.8)
-        # self.conv3 = SAModule(MLP([128 + 3, 256]), 0.4, 0.8)
-        self.res_conv1 = SAModule(MLP([3 + 64, 128]), 5, 0.8)
-        # self.res_conv2 = SAModule(MLP([3 + 128, 64]), 8.5, 0.8)
+        # point_cloud layers for residue level embeddings
+        self.res_embed_layers = MLP([64, 64])
+        self.res_conv1 = SAModule(MLP([3 + 64, 128]), MLP([128, 128]), 0.2, aggr= 'add')
+        # self.res_conv2 = SAModule(MLP([3 + 64, 128]), 8.5, 0.8)
 
-        self.lin1 = Lin(128, 64)
-        # self.lin2 = Lin(256, 128)
-        self.lin2 = Lin(64, 64)
+        self.lin1 = Lin(256, 128)
+        # self.lin2 = Lin(128, 64)
+        # self.lin2 = Lin(128, out_channels)
         self.loss = CosineEmbeddingLoss(reduction='none')
+        self.reset_parameters()
         # self.mlp = Seq(
         #     MLP([1024, 512]), Dropout(0.5), MLP([512, 256]), Dropout(0.5),
         #     Lin(256, out_channels))
 
+    def reset_parameters(self):
+        # self.embed_layer.reset_parameters()
+        # self.embed_norm.reset_parameters()
+        self.gcn1.reset_parameters()
+        self.conv1.reset_parameters()
+        self.res_conv1.reset_parameters()
+        self.lin1.reset_parameters()
+        reset(self.res_embed_layers)
+        reset(self.atom_embed_layers)
+
     def forward(self, data):
-        x, residue_list, pos, decoy_list,target_list, correspondence, batch = \
-            data.x.float(), data.residue_index_list, data.pos.float(), data.decoy_name, data.complex_name, data.correspondence, data.batch
+        x, residue_list, pos, decoy_list,target_list, correspondence,edge_index, edge_attr, batch = \
+            data.x.float(), data.residue_index_list, data.pos.float(), data.decoy_name, data.complex_name, data.correspondence,\
+            data.edge_index, data.edge_attr, data.batch
 
         # x0 = self.tnet(pos)
         # read_out_x = []
         # x1 = self.conv1(torch.cat([x, pos], dim=-1), batch)
-        # x = self.embed_layer(torch.argmax(x,dim =1))
+        # x =  self.embed_norm(torch.relu(self.embed_layer(torch.argmax(x,dim =1))))
         # x = self.conv1(x, pos, batch)
         # x = self.conv2(x,  pos, batch)
         # x3 = self.conv3(*x2)
         x1 = self.conv1(x, pos, batch)
         # x2 = self.conv2(x, pos, batch)
         x1, pos1, batch1 = x1
+        # x2, pos2, batch2 = x2
+        x2 = self.gcn1(x, edge_index, edge_attr)
+        atom_x = self.atom_embed_layers(x1 + x2)
 
         residue_index_batch, residue_to_decoy_batch = global_index_residue(residue_list, decoy_list, x.device)
-        res_x = global_mean_pool(x1, residue_index_batch)
+        res_x = global_add_pool(atom_x , residue_index_batch)
         res_pos = global_mean_pool(pos, residue_index_batch)
+        res_x = self.res_embed_layers(res_x)
+        x3 = self.res_conv1(res_x, res_pos, residue_to_decoy_batch)
+        # x4 = self.res_conv2(res_x, res_pos, residue_to_decoy_batch)
+        x3, pos3, batch3 = x3
+        # x4, pos4, batch2 = x4
 
-        x2 = self.res_conv1(res_x, res_pos, residue_to_decoy_batch)
-        x2, pos2, batch2 = x2
 
+        x_s, x_t, y = organize_by_correspondence(x3, residue_list, decoy_list, correspondence)
 
-        # x3 = self.conv3(*x2)
-
-        x = torch.relu(self.lin1(x2))
-        x = F.dropout(x, p=0.2, training=self.training)
-        x_s, x_t, y = organize_by_correspondence(self.lin2(x), residue_list, decoy_list, correspondence)
+        # x = torch.relu(self.lin1(torch.cat([x_s, x_t], dim= -1)))
+        # x = F.dropout(x, p=0.2, training=self.training)
+        # out = self.lin2(x)
+        # x_s, x_t, y = organize_by_correspondence(self.lin2(x), residue_list, decoy_list, correspondence)
         # x = torch.relu(self.lin2(x))
         # x = F.dropout(x, p=0.2, training=self.training)
-        unweighted_loss = self.loss(x_s, x_t, y)
-        #pos_labels will locate the positive correspondence pairs
         pos_labels = torch.where(y != 1, torch.zeros_like(y), y)
         neg_labels = 1 - pos_labels
         # calculate class weights according to ground truth distribution
-        pos_weights = torch.sum(neg_labels, dim= 0) / torch.sum(pos_labels,dim= 0)
+        # pos_weights = torch.sum(1 - y, dim=0) / torch.sum(y, dim=0)
+        pos_weights = torch.sum(neg_labels, dim=0) / torch.sum(pos_labels, dim=0)
+        # loss = F.binary_cross_entropy_with_logits(out, y.view((-1, 1)), pos_weights)
+        unweighted_loss = self.loss(x_s, x_t, y)
+        #pos_labels will locate the positive correspondence pairs
+
         loss = torch.mean((pos_labels * pos_weights + neg_labels * 1) * unweighted_loss)
-        del unweighted_loss, pos_labels, neg_labels, pos_weights
+        del pos_weights
         if self.training:
             return loss, y
         else:
-            return loss, torch.cosine_similarity(x_s, x_t), y
+            return loss, torch.cosine_similarity(x_s, x_t) , y
 
 
 
