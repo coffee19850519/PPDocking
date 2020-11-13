@@ -222,21 +222,35 @@ class SAModule(torch.nn.Module):
 # can identify which res_num belongs to which protein/batch based on the batch variable
 # TODO: if data is not sequential per protein: per protein sort, save sorted indeces, run below, then revert sort
 def global_index_residue(residue_list_batch, decoy_list, device):
+    '''
 
+    Args:
+        residue_list_batch (list): has batch number of residue indexes for atoms in a protein's interface
+        decoy_list (list): has batch number of protein source pdb filenames
+
+    Returns:
+        residue_index_batch (Tensor): index all atoms by protein.residue globally
+        residue_to_decoy_batch (Tensor) : index of which residues belong to which proteins
+    '''
+
+    # this will store source_protein_file.local_residue for every atom
     full_residue_number_list = []
-    residue_index_batch= []
+    # this will store the protein index for each residue: ex.) different residues from same protein have same value
     residue_to_decoy_batch = []
-    #compose the full residue number for all atoms in batch
+    # compose the full residue number for all atoms in batch
+    # this operation could be done with batch object alternitively
     for decoy_idx, decoy in enumerate(decoy_list):
         for residue_number in residue_list_batch[decoy_idx]:
             full_residue_number_list.append(decoy + '.' + residue_number)
-        #set the same index for all residues in a same decoy
+        # set the same index for all residues in a same decoy
         residue_to_decoy_batch.extend(np.repeat(decoy_idx, len(set(residue_list_batch[decoy_idx]))).tolist())
 
-    #initialize the variables needed in statment
+    # initialize the variables needed in loop
     current_res_index = 0
     current_residue_number = full_residue_number_list[0]
+    residue_index_batch = []
 
+    # index atoms by protein.residue globally
     for full_residue_number in full_residue_number_list:
         if current_residue_number != full_residue_number:
             current_res_index += 1
@@ -252,7 +266,19 @@ def global_index_residue(residue_list_batch, decoy_list, device):
 
 def organize_by_correspondence(x, residue_list, decoy_list,  correspondence):
     # notice: here the x, residue_list and correspondence are all on batch mode
-    # The x should be the residue embeddings aggregated from atom-level embeddings
+    '''
+
+    Args:
+        x: residue embeddings aggregated from atom-level embeddings
+        residue_list: has batch number of residue labels for atoms in a protein's interface
+        decoy_list: has batch number of protein source pdb filenames
+        correspondence: ground_truth residue connection labels for all interfaces
+
+    Returns:
+        x_s (Tensor): x source points in interfaces
+        x_t (Tensor): x target points in interfaces
+        all_ground_truth_list (Tensor): labels for edges if they exist in groundtruth or not
+    '''
 
     all_source_residue_index = []
     all_target_residue_index = []
@@ -260,28 +286,37 @@ def organize_by_correspondence(x, residue_list, decoy_list,  correspondence):
     full_residue_list = []
     source_residue_index = []
     target_residue_index = []
+    # loop through all protein interfaces by index
+    # store all interface connections in all_source_residue_index and all_target_residue_index w/ protein_source_filename.local_residue_label labels
+    # store labels for if connections exist in true protein pairing or not
     for sample_idx in range(len(decoy_list)):
-
+        # get current complex edge labels
         current_correspondence = correspondence[sample_idx]
-        #get uniform residue number and keep their orders for each decoy
+
+        # get list of residues for the current interface by protein_source_filename.local_residue_label
         # cannot use set() to remove duplicated ones, may change their orders
         for residue_num in {}.fromkeys(residue_list[sample_idx]).keys():
             full_residue_list.append(decoy_list[sample_idx] + '.' + residue_num)
 
 
+        # loop through all connections in current interface by index
         for res_idx in range(len(current_correspondence)):
+            # save edge information from correspondence with protein complex source label
             all_source_residue_index.append(decoy_list[sample_idx] + '.' +  current_correspondence[res_idx][0])
             all_target_residue_index.append(decoy_list[sample_idx] + '.' + current_correspondence[res_idx][1])
+
+            # if source and target are bonded, then append 1 as label else append -1
             if current_correspondence[res_idx][2]:
                 all_ground_truth_list.append(1)
             else:
                 all_ground_truth_list.append(-1)
 
+    # convert protein_source_filename.local_residue_label into index labels from list of residues across all interfaces
     for idx in range(len(all_source_residue_index)):
         source_residue_index.append(full_residue_list.index(all_source_residue_index[idx]))
         target_residue_index.append(full_residue_list.index(all_target_residue_index[idx]))
 
-
+    # get x values for given source and target indices
     x_s = x.index_select(dim=0, index=torch.tensor(source_residue_index, dtype= torch.long, device= x.device))
     x_t = x.index_select(dim=0, index=torch.tensor(target_residue_index, dtype=torch.long, device=x.device))
 
@@ -293,6 +328,10 @@ def organize_by_correspondence(x, residue_list, decoy_list,  correspondence):
 
 
 class GCNEConv(MessagePassing):
+
+    '''
+    create a message based on edge and source point attributes and then scale that message by node degree
+    '''
 
     def __init__(self, in_channels: int, out_channels: int, edge_channels: int,
                  improved: bool = False,  **kwargs):
@@ -316,6 +355,8 @@ class GCNEConv(MessagePassing):
                 edge_weight: OptTensor = None) -> Tensor:
 
         if isinstance(edge_index, Tensor):
+            # input: edge_weight is None
+            # output: edge_weight scaling factor for message aggregation of each edge, based on node degree
             edge_index, edge_weight = gcn_norm(  # yapf: disable
             edge_index, edge_weight, x.size(self.node_dim),
             self.improved, True, dtype=x.dtype)
@@ -356,8 +397,10 @@ class DockPointNet(torch.nn.Module):
         # self.tnet = MLP([3, 64, 64, 3])
         self.conv1 = SAModule(MLP([3 + in_channels, 64]), None, 0.2, aggr= 'add')
 
-        #GINE conv layers for atomic bond embeddings
+        # GINE conv layers for atomic bond embeddings
         self.gcn1 = GCNEConv(in_channels + edge_dim, 64, edge_dim)
+
+        # embed atomic represenations
         self.atom_embed_layers = MLP([64, 64])
 
         # point_cloud layers for residue level embeddings
@@ -385,42 +428,57 @@ class DockPointNet(torch.nn.Module):
         reset(self.atom_embed_layers)
 
     def forward(self, data):
+        '''
+
+        Args:
+            data:   x: has atom attributes
+                    pos: has atom position
+                    edge_index: has atomic bond connectivity
+                    edge_attr: has atomic bond edge info
+                    residue_index_list: has batch number of residue labels for atoms in a protein's interface
+                    decoy_name/decoy_list: has batch number of protein source pdb filenames
+                    complex_name/target_list: has batch number of protein names
+                    correspondence: ground_truth residue connection labels for protein-protein interactions
+
+
+        Returns:
+
+        '''
+
         x, residue_list, pos, decoy_list,target_list, correspondence,edge_index, edge_attr, batch = \
             data.x.float(), data.residue_index_list, data.pos.float(), data.decoy_name, data.complex_name, data.correspondence,\
             data.edge_index, data.edge_attr, data.batch
 
-        # x0 = self.tnet(pos)
-        # read_out_x = []
-        # x1 = self.conv1(torch.cat([x, pos], dim=-1), batch)
-        # x =  self.embed_norm(torch.relu(self.embed_layer(torch.argmax(x,dim =1))))
-        # x = self.conv1(x, pos, batch)
-        # x = self.conv2(x,  pos, batch)
-        # x3 = self.conv3(*x2)
+        # get atomic point embeddings w/ PointNet++Conv
         x1 = self.conv1(x, pos, batch)
-        # x2 = self.conv2(x, pos, batch)
         x1, pos1, batch1 = x1
-        # x2, pos2, batch2 = x2
+
+        # get atomic point embeddings based on bond edges
         x2 = self.gcn1(x, edge_index, edge_attr)
+
+        # embed summed points to 64d vector space w/ MLP to get final atomic representations
         atom_x = self.atom_embed_layers(x1 + x2)
 
+        # get index all atoms by protein.residue globally and index of which residues belong to which proteins
         residue_index_batch, residue_to_decoy_batch = global_index_residue(residue_list, decoy_list, x.device)
+
+        # aggregate point features by residue
         res_x = global_add_pool(atom_x , residue_index_batch)
+
+        # get positions for each residue
         res_pos = global_mean_pool(pos, residue_index_batch)
+
+        # embed residue represenations in 64d vector space
         res_x = self.res_embed_layers(res_x)
+
+        # get residue point embeddings w/ PointNet++Conv
         x3 = self.res_conv1(res_x, res_pos, residue_to_decoy_batch)
-        # x4 = self.res_conv2(res_x, res_pos, residue_to_decoy_batch)
         x3, pos3, batch3 = x3
-        # x4, pos4, batch2 = x4
 
-
+        # organize source and target points for connections between residues in interfaces
         x_s, x_t, y = organize_by_correspondence(x3, residue_list, decoy_list, correspondence)
 
-        # x = torch.relu(self.lin1(torch.cat([x_s, x_t], dim= -1)))
-        # x = F.dropout(x, p=0.2, training=self.training)
-        # out = self.lin2(x)
-        # x_s, x_t, y = organize_by_correspondence(self.lin2(x), residue_list, decoy_list, correspondence)
-        # x = torch.relu(self.lin2(x))
-        # x = F.dropout(x, p=0.2, training=self.training)
+        # get pos_labels by 1 if pos 0 if neg, neg_labels by 1 if neg, 0 if pos
         pos_labels = torch.where(y != 1, torch.zeros_like(y), y)
         neg_labels = 1 - pos_labels
         # calculate class weights according to ground truth distribution
