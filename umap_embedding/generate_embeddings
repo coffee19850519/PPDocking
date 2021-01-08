@@ -1,0 +1,135 @@
+import os
+import torch
+import numpy as np
+from PyG_Experiments.util_function import load_checkpoint
+from triple_loss_point_cloud.triple_loss_load_validation_first_and_boostrapping_training_and_testing import train_classification, train_regression, test_classification, \
+    test_regression, val_classification, arguments
+from umap_embedding.docknet_umap import DockPointNet
+from torch_geometric.data import DataLoader
+from triple_loss_point_cloud.triple_loss_point_cloud_convertor import PPDocking_point_cloud
+from tqdm import tqdm
+from triple_loss_point_cloud.triple_loss_point_cloud_convertor import PairData
+import umap
+import umap.plot
+import time
+
+
+def get_model_outputs(args, model, fold):
+
+    test_dataset = PPDocking_point_cloud(root=args.root, fold=fold, split='val')
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size, follow_batch=['x_A', 'x_B'], shuffle=False, num_workers=0)
+
+    model.eval()
+    all_anchor_edges = np.empty([0,1024])
+    all_positive_edges = np.empty([0,1024])
+    all_negative_edges = np.empty([0,1024])
+    count = 0
+    for data in tqdm(test_loader):
+        data = data.to(args.device)
+        with torch.no_grad():
+
+            val_loss,anchor_edges,positive_edges,negative_edges = model(data)
+            all_anchor_edges = np.concatenate((all_anchor_edges, anchor_edges.cpu().numpy()), axis=0)
+            all_positive_edges = np.concatenate((all_positive_edges, positive_edges.cpu().numpy()), axis=0)
+            all_negative_edges = np.concatenate((all_negative_edges, negative_edges.cpu().numpy()), axis=0)
+
+        del data
+
+        count += 1
+        if count == 64:
+            break
+
+    return all_anchor_edges, all_positive_edges, all_negative_edges
+
+if __name__ == '__main__':
+
+    ####validation-1:1, and load only one time;
+    ####boostrapping
+
+    args = arguments(
+        # 1.node feature and edge feature
+        num_node_features = 37,
+        # num_node_features=36,
+        num_edge_attr=25,
+        regression_label_type="DockQ",
+
+        # 2.model setting
+        num_layers=2,
+        hidden=64,
+        dense_hidden=512,
+        k=100,
+        interface_only=True,
+        hop=-1,
+        head=1,
+        mode='classification',
+        concat= False,
+
+        # 3.training setting
+        fold_num=1,
+        batch_size=10,
+        pos_weights=3.0,
+        # learning_rate=0.0005,
+        learning_rate=[0.0001, 0.001, 0.001, 0.001, 0.001],
+        weight_decay = 0.001,
+        device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+        savecheckpoints_mode='min',
+        savecheckpoints_monitor="val_loss",
+        earlystop_patience=20,
+        epochs=201,
+
+        # 4.dataset setting
+        # train_classification_patch_path="/run/media/fei/Windows/hanye/small_regression_train_patch/",
+        train_classification_patch_path="/run/media/fei/Windows/hanye/regression_patch/",
+        # train_classification_patch_path= r'/run/media/fei/Windows/hanye/boostrapping_regression_train_patch/',
+        val_classification_patch_path="/run/media/fei/Windows/hanye/all_small_regression_patch/",
+        test_classification_patch_path="/run/media/fei/Windows/hanye/all_small_regression_patch/",
+
+        boostrapping_train_start_number=1,
+        boostrapping_train_max_number=1,
+        test_max_subset_number=100,
+
+        # 5.others
+        # root=r'/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/',
+        root=r'/run/media/fei/Windows/hanye/point_cloud_format/',
+        model_save_name="201232323_classification_pointcloud_triple_loss_pretrain",
+        checkpoints_folder=r'/home/fei/Research/saved_checkpoints/',
+        pretrained_model_folder="/home/fei/Research/saved_checkpoints/201230_classification_pointcloud_triple_loss_pretrain/",
+        pretrained_model_mode="classification"
+    )
+
+    label_folder = r'/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/5_decoy_name/'
+    # model_save_folder = os.path.join(args.checkpoints_folder, args.model_save_name)
+
+    nfold_results = []
+    # train_summary = []
+    all_mean_std = []
+
+    all_decoy_names = []
+    all_complex_names = []
+    all_targets = []
+    all_scores = []
+    all_labels = []
+    all_test_loss = []
+    n = 0
+
+    testing_model = DockPointNet(args.num_node_features, 11,1)
+
+    testing_model = testing_model.to(args.device)
+
+    # load classification weights
+    testing_model, _, _ = load_checkpoint(os.path.join(args.pretrained_model_folder, '{:d}_fold_{:s}_model.pt'.format(n, args.pretrained_model_mode)), testing_model)
+
+    all_anchor_edges, all_positive_edges, all_negative_edges = get_model_outputs(args=args, model=testing_model, fold=n)
+
+    anchor_labels = np.repeat(0,all_anchor_edges.shape[0])
+    positive_labels = np.repeat(1,all_positive_edges.shape[0])
+    negative = np.repeat(2,all_negative_edges.shape[0])
+
+    num_edges_per_class_to_plot = 15000
+
+    all_edges = np.concatenate((all_anchor_edges[:num_edges_per_class_to_plot,:],all_positive_edges[:num_edges_per_class_to_plot,:],all_negative_edges[:num_edges_per_class_to_plot,:]), axis=0)
+    all_labels = np.concatenate((anchor_labels[:num_edges_per_class_to_plot],positive_labels[:num_edges_per_class_to_plot],negative[:num_edges_per_class_to_plot]), axis=0)
+
+    mapper = umap.UMAP().fit(all_edges, y=all_labels)
+    myplt = umap.plot.points(mapper, labels=all_labels, background='black')
+    umap.plot.show(myplt)
