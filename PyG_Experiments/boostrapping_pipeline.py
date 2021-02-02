@@ -190,8 +190,8 @@ if __name__ == '__main__':
 
         # split = "test"
         if args.mode == 'classification':
-            # test_loss, test_auc, test_rpc, test_ef1, all_complex_names,_, all_scores, all_targets = test_classification(model, device, test_loader)
-            test_loss, test_auc, test_rpc, test_ef, complex_names, decoy_names, scores, targets = test_classification(
+            # test_loss, test_auc, test_rpc, test_ef1, all_complex_names,_, all_scores, all_targets = test_classification(model, device, test_loader), test_rpc, test_ef
+            test_loss, test_auc, complex_names, decoy_names, scores, targets = test_classification(
                 args=args, model=training_model, fold=n, split="test", max_subset_number=args.test_max_subset_number,
                 patch_size=test_patch_size)
 

@@ -11,7 +11,8 @@ from PyG_Experiments.compute_enrichment_factor import calculate_average_EF_from_
     calculate_successful_rate, calculate_average_hit_count
 from load_validation_first_and_boostrapping.load_validation_first_and_boostrapping_training_and_testing import train_classification, train_regression, test_classification, \
     test_regression, val_classification, arguments
-from PyG_Experiments.util_function import EarlyStopping, compute_PCC, compute_EF, save_node_significance
+from PyG_Experiments.util_function import EarlyStopping, compute_PCC, compute_EF, save_node_significance, compute_ratio_EF
+from point_cloud.test import DockPointNet
 from PyG_Experiments.GCNE_net import GCEonv_with_global_pool
 from PyG_Experiments.GATE_net import GATEConv_with_global_pool
 from torch_geometric.nn import DataParallel
@@ -32,7 +33,8 @@ if __name__ == '__main__':
 
     args = arguments(
         # 1.node feature and edge feature
-        num_node_features=36,
+        num_node_features = 37,
+        # num_node_features=36,
         num_edge_attr=25,
         regression_label_type="DockQ",
 
@@ -44,18 +46,19 @@ if __name__ == '__main__':
         interface_only=True,
         hop=-1,
         head=1,
-        mode='regression',
+        mode='classification',
         concat= False,
 
         # 3.training setting
-        fold_num=5,
-        batch_size=250,
+        fold_num=1,
+        batch_size=50,
         pos_weights=3.0,
         # learning_rate=0.0005,
-        learning_rate=[0.01, 0.01, 0.01, 0.01, 0.01],
+        learning_rate=[0.001, 0.001, 0.001, 0.001, 0.001],
+        weight_decay = 0.001,
         device=torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
-        savecheckpoints_mode='min',
-        savecheckpoints_monitor="val_loss",
+        savecheckpoints_mode='max',
+        savecheckpoints_monitor="val_rpc",
         earlystop_patience=10,
         epochs=201,
 
@@ -71,8 +74,9 @@ if __name__ == '__main__':
         test_max_subset_number=100,
 
         # 5.others
-        root=r'/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/',
-        model_save_name="200909_regression_valmse_savecheckpoint_GCN_2layers_no_JK_AllGlobalPooling_boostrapping_noSigmoid",
+        # root=r'/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/',
+        root=r'/run/media/fei/Windows/hanye/point_cloud_two_chain_in_one/',
+        model_save_name="201115_classification_point_and_bond_in_one",
         checkpoints_folder=r'/home/fei/Research/saved_checkpoints/',
         pretrained_model_folder="/home/fei/Research/saved_checkpoints/200904_regression_vpcc_savecheckpoint_GCNE_3layers_cat_JK_AllGlobalPooling_LabelNorm_weightedL1Loss_new_valtest_noSigmoid/remove_JK+originalL1Loss/",
         pretrained_model_mode="regression"
@@ -90,6 +94,9 @@ if __name__ == '__main__':
     all_targets = []
     all_scores = []
     all_labels = []
+    all_test_loss = []
+    all_fnat = []
+    all_category = []
     # model = SortPoolRegression(train_dataset.num_node_features,2,32).to(device)
     # model = GATRegression(train_dataset.num_node_features, 64).to(device)
     # model = TopK(train_dataset, 3, 32, dense_hidden= 256 , ratio= 0.8).to(device)
@@ -105,7 +112,8 @@ if __name__ == '__main__':
         print(str(n) + ' fold starts ... ...')
         # learning_rate = args.learning_rate
         learning_rate = args.learning_rate[n]
-        training_model = GCEonv_with_global_pool(args)
+        # training_model = GCEonv_with_global_pool(args)
+        training_model = DockPointNet(args.num_node_features, 11)
         # training_model = SFEConv_with_global_pool(args)
         # training_model = GATEConv_with_global_pool(args)
         #training_model = DataParallel(training_model)
@@ -135,7 +143,8 @@ if __name__ == '__main__':
                                                       train_subset_number=boostrapping_number,
                                                       val_subset_number=boostrapping_number,
                                                       earlystop=earlystop,
-                                                      learning_rate=learning_rate
+                                                      learning_rate=learning_rate,
+                                                      weight_decay= args.weight_decay
                                                     )
                 # train_summary.extend(summary)
 
@@ -189,7 +198,8 @@ if __name__ == '__main__':
         # split = "test"
         if args.mode == 'classification':
             # test_loss, test_auc, test_rpc, test_ef, all_complex_names,_, all_scores, all_targets = test_classification(model, device, test_loader)
-            test_loss, test_auc, test_rpc, test_ef, test_sr, complex_names, decoy_names, scores, targets = test_classification(
+            # , test_ef, test_sr, test_loss
+            test_loss, complex_names, decoy_names, scores, targets, auc, auc_precision_recall, ef, sr, category, predict_fnat = test_classification(
                 args=args, model=training_model, fold=n, split="test", max_subset_number=args.test_max_subset_number,
                 patch_size=test_patch_size)
 
@@ -197,12 +207,16 @@ if __name__ == '__main__':
             all_decoy_names.extend(decoy_names)
             all_scores.extend(scores)
             all_targets.extend(targets)
+            all_test_loss.append(test_loss)
+            all_fnat.extend(predict_fnat)
+            all_category.extend(category)
+            # , test_ef: {:.4f}, test_sr: {:.4f}, test_ef,test_sr, 'ef': test_ef, 'sr': test_sr, test_ef,test_loss
+            print('{:d} fold test_acc: {:.4f}, test_auc:{:.4f}, test_prc:{:.4f}'.format(n, test_loss, auc,
+                                                                                        auc_precision_recall))
 
-            print('{:d} fold test_auc: {:.4f}, test_rpc: {:.4f}, test_ef: {:.4f}, test_sr: {:.4f}'.format(n, test_auc, test_rpc,
-                                                                                          test_ef,test_sr))
+            nfold_results.append({'fold': n, 'loss': test_loss, 'auc': auc, 'prc': auc_precision_recall})
+            del complex_names, decoy_names, scores, targets, test_loss
 
-            nfold_results.append({'fold': n, 'auc': test_auc, 'rpc': test_rpc, 'ef': test_ef, 'sr': test_sr})
-            del test_loss, test_auc, test_rpc, test_ef, complex_names, decoy_names, scores, targets
         elif args.mode == 'regression':
             test_loss, test_pcc, test_spcc, test_ef,test_sr, complex_names, decoy_names, scores, targets, categories= test_regression(
                 args=args, model=training_model, fold=n, split="test", max_subset_number=args.test_max_subset_number,
@@ -218,27 +232,32 @@ if __name__ == '__main__':
 
             nfold_results.append({'fold': n, 'loss':test_loss, 'pcc': test_pcc, 'spcc': test_spcc, 'ef': test_ef, 'sr': test_sr})
             del test_pcc, test_ef
-        del training_model
+
+    del training_model
 
 
 
     # # save to file at save_folder
-    df_predict = pd.DataFrame({'complex_name': all_complex_names, 'decoy_no': all_decoy_names, 'label': all_targets,
-                               'prediction': all_scores, 'regression_label': all_labels})
+    # # save to file at save_folder
+    df_predict = pd.DataFrame({'complex_name': all_complex_names, 'decoy_no': all_decoy_names, 'label': all_category,
+                               'prediction': all_fnat})
     df_predict.to_csv(os.path.join(model_save_folder, r'data_prediction.csv'), index=False)
 
-    del df_predict, all_complex_names, all_decoy_names, all_targets, all_scores
+    compute_ratio_EF(all_fnat, all_category, all_complex_names, 50, model_save_folder, r'EF_results.csv')
+
+    calculate_average_hit_count(model_save_folder, 50)
+
+    calculate_successful_rate(model_save_folder, 50)
+
+    del df_predict, all_complex_names, all_decoy_names, all_targets, all_scores, all_fnat, all_category
 
     if args.mode == 'classification':
         df_nfold_results = pd.DataFrame(nfold_results)
-        mean_auc = np.mean(df_nfold_results['auc'])
-        mean_rpc = np.mean(df_nfold_results['rpc'])
-        mean_ef = np.mean(df_nfold_results['ef'])
-        print('{:d} fold test mean_auc: {:.4f}, test mean_rpc: {:.4f}, test mean_ef: {:.4f}'.format(n + 1, mean_auc,
-                                                                                                     mean_rpc,
-                                                                                                     mean_ef))
+        mean_loss = np.mean(df_nfold_results['loss'])
 
-        nfold_results.append({'mean_auc': mean_auc, 'mean_rpc': mean_rpc, 'mean_ef': mean_ef})
+        print('{:d} fold test mean_loss: {:.4f}'.format(n + 1, mean_loss))
+
+        nfold_results.append({'mean_acc': mean_loss})
 
         with open(os.path.join(model_save_folder,
                                '{:d}fold_hop{:d}_{:s}_results.json'.format(n + 1, args.hop, args.mode)),
@@ -263,7 +282,7 @@ if __name__ == '__main__':
             json.dump(nfold_results, json_fp)
         del nfold_results, df_nfold_results, args
 
-    max_count = 1000
-    calculate_average_EF_from_meta_learners(model_save_folder, max_count)
-    calculate_successful_rate(model_save_folder, max_count)
-    calculate_average_hit_count(model_save_folder, max_count)
+    # max_count = 1000
+    # calculate_average_EF_from_meta_learners(model_save_folder, max_count)
+    # calculate_successful_rate(model_save_folder, max_count)
+    # calculate_average_hit_count(model_save_folder, max_count)

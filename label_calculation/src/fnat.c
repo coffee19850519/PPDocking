@@ -6,7 +6,7 @@
 
 //
 // Any comments and suggestion may be sent to:
-// Author: Björn Wallner
+// Author: Bjï¿½rn Wallner
 // E-mail: bjorn.wallner@liu.se
 //   
 //
@@ -203,11 +203,9 @@ int main(int argc,char *argv[])		/* Main routine */
 			    modelA[interface_contacts_model]=model[0].atm[i].resnum;
 			    modelB[interface_contacts_model]=model[0].atm[j].resnum;
 			    interface_contacts_model++;
-			    			    
-			    if(verbose) {
-			      d=crd(model,i,j);
-			      printf("MODEL: %d%s %d%s %f %d %d\n",model[0].atm[i].resnum,model[0].atm[i].chain,model[0].atm[j].resnum,model[0].atm[j].chain,sqrt(d),current_res_i,current_res_j);
-			    }
+//			    d=crd(model,i,j);
+			    printf("MODEL: %d%s %d%s\n",model[0].atm[i].resnum,model[0].atm[i].chain,model[0].atm[j].resnum,model[0].atm[j].chain);
+
 			    /*contacts2[current_res_i][current_res_j]=1;
 			      contacts2[current_res_j][current_res_i]=1;*/
 			  //res_contacts[get_res(model[0].atm[i].residue)][get_res(model[0].atm[j].residue)]++;
@@ -225,7 +223,7 @@ int main(int argc,char *argv[])		/* Main routine */
 
   int matches=0;
   if(chainA!= chainA2 || chainB != chainB2) {
-    fprintf(stderr,"chain mismatch %c %c %c %c",chainA,chainA2,chainB,chainB2);
+    fprintf (stderr,"chain mismatch %c %c %c %c",chainA,chainA2,chainB,chainB2);
   } else {
 
 
@@ -234,10 +232,8 @@ int main(int argc,char *argv[])		/* Main routine */
       for(j=0;j<interface_contacts_model;j++) {
 	if(nativeA[i] == modelA[j] &&
 	   nativeB[i] == modelB[j]) {
-	  if(verbose)
-	    printf("OverlapMODEL-NATIVE %d%c %d%c\n",nativeA[i],chainA,nativeB[i],chainB);
+	  printf("Overlap %d%c %d%c\n",modelA[j], chainA, modelB[j], chainB);
 	  matches++;
-
 	}
       }
 

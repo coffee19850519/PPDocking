@@ -328,13 +328,13 @@ class PPDocking(InMemoryDataset):
 
         self.fold = fold
         super(PPDocking, self).__init__(root, transform, pre_transform, pre_filter)
-        if mode == 'classification':
-            self.data, self.slices = torch.load(os.path.join(load_folder, '{:d}_subset_{:d}_fold_{:d}_patch_{:s}_data.pt'.format(subset, fold, patch, split)))
-        else:
-            self.data, self.slices = torch.load(os.path.join(load_folder,
-                                                             '{:d}_fold_{:d}_patch_{:s}_data.pt'.format(
-                                                                 fold, patch, split)))
-            pass
+        # if mode == 'classification':
+        #     self.data, self.slices = torch.load(os.path.join(load_folder, '{:d}_subset_{:d}_fold_{:d}_patch_{:s}_data.pt'.format(subset, fold, patch, split)))
+        # else:
+        #     self.data, self.slices = torch.load(os.path.join(load_folder,
+        #                                                      '{:d}_fold_{:d}_patch_{:s}_data.pt'.format(
+        #                                                          fold, patch, split)))
+        #     pass
             # if split == 'train':
             #
             #     target_names = read_txt(os.path.join(root, '5_decoy_name','caseID.lst'))

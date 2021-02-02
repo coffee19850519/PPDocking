@@ -588,7 +588,8 @@ def compute_top_EF(valid_preds, valid_targets, complex_names, top_num_list, save
         print(str(key) + ':' + str(values))
 
 def compute_ratio_EF(valid_preds, valid_targets, complex_names, max_count, save_folder, save_file_name):
-
+    if len(set(valid_preds)) == 1:
+        return 0
     dict = {'pred': valid_preds, 'target': valid_targets, 'complex_names': complex_names}
     source_data = pd.DataFrame(dict, columns=dict.keys())
 
@@ -597,16 +598,34 @@ def compute_ratio_EF(valid_preds, valid_targets, complex_names, max_count, save_
     top_list = []
     for complex_name in all_complex_names:
         df = source_data.loc[source_data['complex_names'] == complex_name].sort_values(by=['pred', 'target'], ascending=False).reset_index(drop=True)
-        EF_max = (df.shape[0]) / (df["target"].sum(axis=0))
+
+        max_positive = df["target"].sum(axis=0)
+        EF_max = df.shape[0] / max_positive
         top_EF_dic = {}
         top_EF_dic['complex_names'] = complex_name
         top_EF_dic['EF_max'] = EF_max
 
-        for k in range(1, max_count+ 1):
-            top_dataframe = df.iloc[0:k]
-            top_accuracy = (top_dataframe["target"].sum(axis=0)) / (top_dataframe.shape[0])
-            top_EF = top_accuracy * EF_max
-            top_EF_dic[k] = top_EF
+        df = df.loc[df['pred'] > 0]
+
+        if len(df) < max_count:
+            #append target=predict=0
+            for idx in range(max_count - len(df), max_count):
+                df.loc[idx] = [0,0,complex_name]
+
+        if max_positive < max_count:
+            for k in range(1, max_positive+ 1):
+                top_dataframe = df.iloc[0:k]
+                top_accuracy = (top_dataframe["target"].sum(axis=0)) / (top_dataframe.shape[0])
+                top_EF = top_accuracy * EF_max
+                top_EF_dic[k] = top_EF
+            for i in range(max_positive + 2, max_count+ 1):
+                top_EF_dic[i] = top_EF_dic[k]
+        else:
+            for k in range(1, max_count+ 1):
+                top_dataframe = df.iloc[0:k]
+                top_accuracy = (top_dataframe["target"].sum(axis=0)) / (top_dataframe.shape[0])
+                top_EF = top_accuracy * EF_max
+                top_EF_dic[k] = top_EF
 
         top_list.append(top_EF_dic)
         del top_EF_dic
@@ -634,55 +653,100 @@ def compute_ratio_EF(valid_preds, valid_targets, complex_names, max_count, save_
     # for key, values in EF_percent_dic.items():
     #     print(str(key) + ':' + str(values))
 
-def compute_EF(valid_preds, valid_targets, complex_names):
+def compute_EF(valid_preds, valid_targets, complex_names, accumulative_num : int):
+    if len(set(valid_preds)) == 1:
+        return 0.0
 
     dict = {'pred': valid_preds, 'target': valid_targets, 'complex_names': complex_names}
     source_data = pd.DataFrame(dict, columns=dict.keys())
 
     all_complex_names = source_data['complex_names'].unique()
 
-    ef_mean = 0.0
-    for k in range(1, 51):
-        ef_list = []
-        for complex_name in all_complex_names:
-            df = source_data.loc[source_data['complex_names'] == complex_name].sort_values(by=['pred', 'target'], ascending=False).reset_index(drop=True)
-            if df["target"].sum(axis=0) != 0:
-                EF_max = (df.shape[0]) / (df["target"].sum(axis=0))
+    ef_list = []
+
+    for complex_name in all_complex_names:
+        df = source_data.loc[source_data['complex_names'] == complex_name].sort_values(by=['pred', 'target'], ascending=False).reset_index(drop=True)
+        max_positive = df["target"].sum(axis=0)
+
+
+        df = df.loc[df['pred'] > 0]
+
+        if len(df) < accumulative_num:
+            # append target=predict=0
+            for idx in range(accumulative_num - len(df), accumulative_num):
+                df.loc[idx] = [0, 0, complex_name]
+
+        if max_positive < accumulative_num:
+            for k in range(1, max_positive + 1):
+                top_dataframe = df.iloc[0:k]
+                top_accuracy = (top_dataframe["target"].sum(axis=0)) / (top_dataframe.shape[0]+ 0.00001)
+                top_EF = top_accuracy * EF_max
+                ef_list.append(top_EF)
+            for i in range(max_positive + 2, accumulative_num + 1):
+                ef_list.append(ef_list[k])
+        else:
+            for k in range(1, accumulative_num + 1):
+                EF_max = (df.shape[0]) / (df["target"].sum(axis=0) + 0.00001)
                 # k = math.ceil(0.001 * df.shape[0])
                 top_dataframe = df.iloc[0:k]
                 top_accuracy = (top_dataframe["target"].sum(axis=0)) / (top_dataframe.shape[0])
                 top_EF = top_accuracy * EF_max
                 ef_list.append(top_EF)
-        ef_mean += np.mean(ef_list)
-        del ef_list
-    ef_mean /= 50
+
+    ef_mean = np.mean(ef_list)
+
+    del ef_list
+
+    # ef_mean /= accumulative_num
     del dict, source_data, all_complex_names
     return ef_mean
 
-def compute_success_rate(valid_preds, valid_targets, complex_names):
-
+def compute_success_rate(valid_preds, valid_targets, complex_names, accumulative_num : int):
+    if len(set(valid_preds)) == 1:
+        return 0.0, {}
     dict = {'pred': valid_preds, 'target': valid_targets, 'complex_names': complex_names}
     source_data = pd.DataFrame(dict, columns=dict.keys())
-
     all_complex_names = source_data['complex_names'].unique()
+    success_rate_at_k = {}
 
-    success_rate_mean = 0.0
-    for k in range (1, 51):
+    for k in range(1, accumulative_num + 1):
         success_rate_k = 0.0
+
         for complex_name in all_complex_names:
+
             df = source_data.loc[source_data['complex_names'] == complex_name].sort_values(by=['pred', 'target'], ascending=False).reset_index(drop=True)
-            if df["target"].sum(axis=0) != 0:
-                    top_dataframe = df.iloc[0 : k]
-                    top_count = top_dataframe["target"].sum(axis=0)
-                    if top_count!=0:
-                        success_rate_k +=1
+            if len(set(df['pred'].tolist())) == 1:
+                continue
+            max_positive = df["target"].sum(axis=0)
+            df = df.loc[df['pred'] > 0]
+
+            if len(df) < accumulative_num:
+                # append target=predict=0
+                for idx in range(accumulative_num - len(df), accumulative_num):
+                    df.loc[idx] = [0, 0, complex_name]
+
+            if max_positive < k:
+                top_dataframe = df.iloc[0: max_positive]
+                top_count = top_dataframe["target"].sum(axis=0)
+                if top_count != 0:
+                    success_rate_k += 1
+            else:
+                top_dataframe = df.iloc[0 : k]
+                top_count = top_dataframe["target"].sum(axis=0)
+                if top_count!=0:
+                    success_rate_k +=1
 
         success_rate_k = success_rate_k / len(all_complex_names)
-        success_rate_mean += success_rate_k
-    success_rate_mean /= 50
-    del dict, source_data, all_complex_names
-    return success_rate_mean
+        success_rate_at_k.update({k:success_rate_k})
 
+    success_rate_mean = sum(list(success_rate_at_k.values()))/ accumulative_num
+    del dict, source_data, all_complex_names
+    return success_rate_mean, success_rate_at_k
+
+
+
+def real_rannk_hit():
+    raise NotImplemented
 
 def auc_per_complex(all_pred, all_gt, all_complex_names, pos_label):
     unique_complex_list = set(all_complex_names)

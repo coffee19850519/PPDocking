@@ -99,8 +99,8 @@ def train_classification(args, model, fold, model_save_folder,train_patch_size, 
         #     best_val_error = val_error
 
         print('Epoch: {:03d}, LR: {:4f}, Loss: {:.4f}, val_loss: {:.4f}, val_auc: {:.4f}, val_rpc: {:.4f}, val_ef1: {:4f}'.format(epoch, lr, average_loss, val_loss, val_auc, val_rpc, val_ef1))
-        summary.append({'fold':fold, 'epoch':epoch, 'lr':lr, 'train_loss':loss.item(), 'val_loss': val_loss, 'val_auc': val_auc, 'val_rpc': val_rpc, 'val_ef1':  val_ef1})
-        del val_loss, val_auc, val_rpc, val_ef1 , all_complex_names, all_scores, all_targets
+        summary.append({'fold':fold, 'epoch':epoch, 'lr':lr, 'train_loss':loss.item(), 'val_loss': val_loss, 'val_auc': val_auc, 'val_rpc': val_rpc, 'val_ef1':  val_ef})
+        del val_loss, val_auc, val_rpc, val_ef , all_complex_names, all_scores, all_targets
         if earlystop.early_stop:
             print("Early stopping")
             break
@@ -194,10 +194,10 @@ def test_classification(args, model, fold, split,max_subset_number,patch_size):
     auc = metrics.auc(fpr, tpr)
     precision, recall, _ = metrics.precision_recall_curve(all_targets, all_scores, pos_label=1)
     auc_precision_recall = metrics.auc(recall, precision)
-    #val_loss = torch.mean(torch.stack(all_val_loss)).item()
-    ef = compute_EF(all_scores, all_targets, all_complex_names)
-    #del all_val_loss
-    return auc, auc_precision_recall, ef, all_complex_names, all_decoy_names, all_scores, all_targets
+    # val_loss = torch.mean(torch.stack(all_val_loss)).item()
+    # ef = compute_EF(all_scores, all_targets, all_complex_names)
+    #del all_val_loss,ef
+    return auc, auc_precision_recall,  all_complex_names, all_decoy_names, all_scores, all_targets
 
 
 def train_regression(train_dataset, val_dataset, args, fold,  mean, std):

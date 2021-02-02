@@ -5,7 +5,7 @@ import numpy as np
 import math
 import torch
 from torch_geometric.data import DataLoader
-from PyG_Experiments.util_function import compute_ratio_EF, compute_top_EF,load_checkpoint
+from PyG_Experiments.util_function import compute_ratio_EF, compute_top_EF,load_checkpoint, compute_success_rate
 from PyG_Experiments.sort_pool_regression import GATSortPool
 from PyG_Experiments.import_data import PPDocking, arguments
 
@@ -151,6 +151,9 @@ def calculate_average_hit_count(save_results_folder, top_high):
             top_accuracy_dic = {}
             top_accuracy_dic['complex_name'] = complex_name
             df_current_complex_predictions = data_full[data_full['complex_name'] == complex_name]
+            if len(set(df_current_complex_predictions['prediction'].tolist())) == 1:
+                raise Exception('all predicts are constant')
+
             df_current_complex_predictions = df_current_complex_predictions.sort_values(by=[metric_name, 'label'],
                                                                                         ascending=False).reset_index(drop=True)
             # df = df.loc[df['prediction'] > cut_off]
@@ -182,9 +185,9 @@ def calculate_average_hit_count(save_results_folder, top_high):
 
 def calculate_successful_rate(save_results_folder, top_high):
 
-    success_rate_list = [i for i in range(1, top_high + 1)]
+    # success_rate_list = [i for i in range(1, top_high + 1)]
 
-    success_rate_dic_list = []
+    # success_rate_dic_list = []
     #merge 5-fold results into one dataframe
 
     data_full = pd.read_csv(os.path.join(save_results_folder, 'data_prediction.csv'))
@@ -194,50 +197,56 @@ def calculate_successful_rate(save_results_folder, top_high):
     #     del data
 
     #get all complex names
-    all_complex_names = data_full['complex_name'].unique()
-    ensemble_metrics = list(data_full)
-    ensemble_metrics.remove('decoy_no')
-    ensemble_metrics.remove('complex_name')
-    ensemble_metrics.remove('label')
+    # all_complex_names = data_full['complex_name'].unique()
+    # ensemble_metrics = list(data_full)
+    # ensemble_metrics.remove('decoy_no')
+    # ensemble_metrics.remove('complex_name')
+    # ensemble_metrics.remove('label')
 
 
-    for metric_name in ensemble_metrics:
-        top_accuracy_all_list = []
-        for complex_name in all_complex_names:
-            top_accuracy_dic = {}
-            top_accuracy_dic['complex_name'] = complex_name
-            df_current_complex_predictions = data_full[data_full['complex_name'] == complex_name]
-            df_current_complex_predictions = df_current_complex_predictions.sort_values(by=[metric_name, 'label'], ascending=False).reset_index(drop=True)
-            # df = df.loc[df['prediction'] > cut_off]
 
-            for k in range(1, top_high+1):
-                top_dataframe_at_current_metric = df_current_complex_predictions.iloc[0:k]
-                top_accuracy_at_current_metric = top_dataframe_at_current_metric["label"].sum(axis=0)
-                top_accuracy_dic[k] = top_accuracy_at_current_metric
-                del  top_dataframe_at_current_metric, top_accuracy_at_current_metric
-                # top_accuracy_list.append(top_accuracy/(k+1))
-                # top_accuracy_list.append(top_accuracy)
-            # plot_results(complex_name, top_accuracy_list, os.path.join(fir_dir, f'fold_{i}', '20200306-1'))
-            top_accuracy_all_list.append(top_accuracy_dic)
-            del top_accuracy_dic
+    # top_accuracy_all_list = []
+    # for complex_name in all_complex_names:
+    #     top_accuracy_dic = {}
+    #     top_accuracy_dic['complex_name'] = complex_name
+    #     df_current_complex_predictions = data_full[data_full['complex_name'] == complex_name]
+    #
+    #     if len(set(df_current_complex_predictions['prediction'].tolist())) == 1:
+    #         raise Exception('all predicts are constant')
+    #     df_current_complex_predictions = df_current_complex_predictions.sort_values(by=[metric_name, 'label'], ascending=False).reset_index(drop=True)
+    #     # df = df.loc[df['prediction'] > cut_off]
+    #
+    #     for k in range(1, top_high+1):
+    #         top_dataframe_at_current_metric = df_current_complex_predictions.iloc[0:k]
+    #         top_accuracy_at_current_metric = top_dataframe_at_current_metric["label"].sum(axis=0)
+    #         top_accuracy_dic[k] = top_accuracy_at_current_metric
+    #         del  top_dataframe_at_current_metric, top_accuracy_at_current_metric
+    #         # top_accuracy_list.append(top_accuracy/(k+1))
+    #         # top_accuracy_list.append(top_accuracy)
+    #     # plot_results(complex_name, top_accuracy_list, os.path.join(fir_dir, f'fold_{i}', '20200306-1'))
+    #     top_accuracy_all_list.append(top_accuracy_dic)
+    #     del top_accuracy_dic
+    #
+    # top_dataframe = pd.DataFrame(top_accuracy_all_list)
 
-        top_dataframe = pd.DataFrame(top_accuracy_all_list)
+    _, success_rate_dict = compute_success_rate(data_full['prediction'].tolist(), data_full['label'].tolist(),
+                                                data_full['complex_name'].tolist(), top_high)
 
-        success_rate_dic = {}
-        success_rate_dic['ensemble_metrics'] = metric_name
-        for s_top in success_rate_list:
-            success_rate_dic[s_top] = (top_dataframe.loc[top_dataframe[s_top] != 0].shape[0]) / (
-            top_dataframe.shape[0])
-        success_rate_dic_list.append(success_rate_dic)
-        del top_dataframe, success_rate_dic, top_accuracy_all_list
+    # success_rate_dic = {}
+    # success_rate_dic['ensemble_metrics'] = metric_name
+    # for s_top in success_rate_list:
+    #     success_rate_dic[s_top] = (top_dataframe.loc[top_dataframe[s_top] != 0].shape[0]) / (
+    #     top_dataframe.shape[0])
+    # success_rate_dic_list.append(success_rate_dic)
+    # del top_dataframe, success_rate_dic, top_accuracy_all_list
 
-    success_rate_dataframe = pd.DataFrame(success_rate_dic_list)
+    success_rate_dataframe = pd.DataFrame(success_rate_dict, index=[0])
     #top_dataframe = pd.concat([success_rate_dataframe, top_dataframe], axis=0, sort=False).reset_index(drop=True)
 
     path = os.path.join(save_results_folder, 'success_rate_results.csv')
     success_rate_dataframe.to_csv(path,index = False)
 
-    del success_rate_list, data_full,success_rate_dataframe, success_rate_dic_list, all_complex_names
+    del data_full,success_rate_dataframe, success_rate_dict
 
 if __name__ == '__main__':
     # args = arguments(num_node_features=26, num_layers=3, hidden=32,

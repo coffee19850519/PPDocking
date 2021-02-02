@@ -1,7 +1,7 @@
 # !/usr/bin/env python3
 import csv
 import Bio.PDB
-import warnings
+import json
 # warnings.simplefilter('ignore', BiopythonWarning)
 import sys
 import os
@@ -9,15 +9,11 @@ import re
 import tempfile
 import numpy as np
 from Bio.SVDSuperimposer import SVDSuperimposer
-from math import sqrt
 from argparse import ArgumentParser
 import itertools
 import subprocess
-from tqdm import tqdm
 from multiprocessing import cpu_count, Pool
-import threading
-from time import ctime,sleep
-from multiprocessing import Process
+from util_function import write_txt
 import pandas as pd
 
 def parse_fnat(fnat_out):
@@ -28,10 +24,16 @@ def parse_fnat(fnat_out):
     nonnat_count=-1
     model_total=-1
     inter=[]
+    chain_A_interface = []
+    chain_B_interface = []
+    correspndence = []
+    overlap = []
     for line in fnat_out.split("\n"):
 #        print line
         line=line.rstrip('\n')
         match=re.search(r'NATIVE: (\d+)(\w) (\d+)(\w)',line)
+        model_interface = re.search(r'MODEL: (\d+)(\w) (\d+)(\w)',line)
+        model_native_overlap = re.search(r'Overlap (\d+)(\w) (\d+)(\w)',line)
         if(re.search(r'^Fnat',line)):
             list=line.split(' ')
             fnat=float(list[3])
@@ -49,9 +51,36 @@ def parse_fnat(fnat_out):
             res2=match.group(3)
             chain2=match.group(4)
            # print res1 + ' ' + chain1 + ' ' + res2 + ' ' + chain2
-            inter.append(res1 + chain1)
-            inter.append(res2 + chain2)
-    return (fnat,nat_correct,nat_total,fnonnat,nonnat_count,model_total,inter)
+            inter.append((chain1 + '.' + res1, chain2 + '.' + res2))
+            # inter.append(res2 + chain2)
+        elif(model_interface):
+            # print line
+            res1 = model_interface.group(1)
+            chain1 = model_interface.group(2)
+            res2 = model_interface.group(3)
+            chain2 = model_interface.group(4)
+            # print res1 + ' ' + chain1 + ' ' + res2 + ' ' + chain2
+            if int(res1) < 9000 and int(res2) < 9000:
+                #otherwise, those residues were masked when aligned to native
+                if chain1 == 'A':
+                    chain_A_interface.append(int(res1))
+                else:
+                    chain_B_interface.append(int(res1))
+                if chain2 == 'B':
+                    chain_B_interface.append(int(res2))
+                else:
+                    chain_A_interface.append(int(res2))
+                #build the coupling residues from two individuals
+                correspndence.append((chain1 + '.' + res1, chain2 + '.' + res2))
+        elif(model_native_overlap):
+            res1 = model_native_overlap.group(1)
+            chain1 = model_native_overlap.group(2)
+            res2 = model_native_overlap.group(3)
+            chain2 = model_native_overlap.group(4)
+            overlap.append((chain1 + '.' + res1, chain2 + '.' + res2))
+
+
+    return (fnat,nat_correct,nat_total,fnonnat,nonnat_count,model_total,inter, {'A':set(chain_A_interface), 'B': set(chain_B_interface)}, correspndence,overlap)
 
 def capri_class(fnat,iRMS,LRMS,capri_peptide=False):
 
@@ -117,12 +146,12 @@ def calc_DockQ(model,native,use_CA_only=False,capri_peptide=False):
     #fnat_out = os.popen(cmd_fnat).readlines()
     fnat_out = subprocess.getoutput(cmd_fnat)
 #    sys.exit()
-    (fnat,nat_correct,nat_total,fnonnat,nonnat_count,model_total,interface5A)=parse_fnat(fnat_out)
+    (fnat,nat_correct,nat_total,fnonnat,nonnat_count,model_total,interface5A, decoy_interface5A_dict, correspondence5A, overlap5A)=parse_fnat(fnat_out)
     del fnat_out
     assert fnat!=-1, "Error running cmd: %s\n" % (cmd_fnat)
 #    inter_out = os.popen(cmd_interface).readlines()
     inter_out = subprocess.getoutput(cmd_interface)
-    (fnat_bb,nat_correct_bb,nat_total_bb,fnonnat_bb,nonnat_count_bb,model_total_bb,interface)=parse_fnat(inter_out)
+    (fnat_bb,nat_correct_bb,nat_total_bb,fnonnat_bb,nonnat_count_bb,model_total_bb,interface, decoy_interface_dict, correspondence, overlap)=parse_fnat(inter_out)
 
     del inter_out
     assert fnat_bb!=-1, "Error running cmd: %s\n" % (cmd_interface)
@@ -353,8 +382,12 @@ def calc_DockQ(model,native,use_CA_only=False,capri_peptide=False):
     sup=SVDSuperimposer()
     Lrms = sup._rms(coord1,coord2) #using the private _rms function which does not superimpose
 
+
+
+
+
     del chain_ref, common_residues, ref_atoms, sample_atoms, common_interface, chain_res, sup, atoms_def_sample, atoms_def_in_both, chain_sample
-    del ref_structure,sample_structure
+    del ref_structure,sample_structure, decoy_interface_dict, correspondence, overlap
     del ref_model, sample_model,coord1, coord2, interface, interface5A, super_imposer, sample_res, sample_chain, ref_res, ref_chain, pdb_parser
     #super_imposer.set_atoms(chain_ref[ligand_chain], chain_sample[ligand_chain])
     #super_imposer.apply(sample_model.get_atoms())
@@ -387,7 +420,7 @@ def calc_DockQ(model,native,use_CA_only=False,capri_peptide=False):
     info['class1']=class1
     info['class2']=class2
     
-    return info
+    return info, decoy_interface5A_dict,correspondence5A, overlap5A
 
 def get_pdb_chains(pdb):
     pdb_parser = Bio.PDB.PDBParser(QUIET = True)
@@ -608,8 +641,8 @@ def cal_similarity(model, native, args):
                         if not os.path.exists(model_fixed):
                             print('If you are sure the residues are identical you can use the options -no_needle')
                             sys.exit()
-                    test_dict=calc_DockQ(model_fixed,native,use_CA_only)
-                    os.remove(model_fixed)
+                    test_dict, decoy_interface, correspondence, overlap =calc_DockQ(model_fixed,native,use_CA_only)
+                    # os.remove(model_fixed)
                     if not args.quiet:
                         print(str(pe)+'/'+str(pe_tot) + ' ' + ''.join(g1) + ' -> ' + ''.join(g2) + ' ' + str(test_dict['DockQ']))
                     if(test_dict['DockQ'] > best_DockQ):
@@ -639,11 +672,12 @@ def cal_similarity(model, native, args):
                 if not os.path.exists(model_fixed):
                     print('If you are sure the residues are identical you can use the options -no_needle')
                     sys.exit()
-            info=calc_DockQ(model_fixed,native,use_CA_only)
+            info,decoy_interface_dict, correspondence, overlap =calc_DockQ(model_fixed,native,use_CA_only)
 
             #os.system('cp ' + native + ' native_multichain.pdb')
             #os.system('cp ' + model_fixed + ' .')
-            os.remove(model_fixed)
+
+            # os.remove(model_fixed)
     else:
         if not args.no_needle:
             fix_numbering_cmd = fix_numbering + ' ' + model + ' ' + native + ' > /dev/null'
@@ -654,8 +688,8 @@ def cal_similarity(model, native, args):
             if not os.path.exists(model_fixed):
                 print('If you are sure the residues are identical you can use the options -no_needle')
                 sys.exit()
-        info = calc_DockQ(model_fixed, native, use_CA_only)
-        os.remove(model_fixed)
+        info, decoy_interface_dict, correspondence, overlap = calc_DockQ(model_fixed, native, use_CA_only)
+        # os.remove(model_fixed)
 
         # info=calc_DockQ(model,native,use_CA_only=use_CA_only,capri_peptide=capri_peptide) #False):
 #        info=calc_DockQ(model,native,use_CA_only=)
@@ -740,7 +774,7 @@ def cal_similarity(model, native, args):
     elif CAPRI =='High':
         CAPRI_interger = 3
 
-    return DockQ, fnat,irms, Lrms, fnonnat, IOU, model_in,native_in,best_info,CAPRI_interger
+    return DockQ, fnat,irms, Lrms, fnonnat, IOU, model_in,native_in,best_info,CAPRI_interger, decoy_interface_dict, correspondence,overlap
 
 
 def read_chain_name(pdb_path):
@@ -754,13 +788,26 @@ def read_chain_name(pdb_path):
 
     return chain
 
-def calculate_gt_for_decoy(decoy_name, native, target_name, args, decoy_path):
+
+class interface_extraction(Bio.PDB.Select):
+    def __init__(self, interface_dict, current_chain):
+        self.interface_dict = interface_dict
+        self.current_chain = current_chain
+
+    def accept_residue(self, residue):
+        if residue.get_parent().id == self.current_chain and residue.id[1] in self.interface_dict[self.current_chain]:
+            return 1
+        else:
+            return 0
+
+def calculate_gt_for_decoy(decoy_name, native, target_name, args, decoy_path, save_decoy_interface_folder):
     label_dic = {}
+    correspondence_gt = []
     model = os.path.join(decoy_path, target_name, decoy_name)
     args.model_chain1 = 'A'
     args.model_chain2 = 'B'
 
-    DockQ, fnat, irms, Lrms, fnonnat, IOU, _, _, _, CAPRI_interger = cal_similarity(model, native, args)
+    DockQ, fnat, irms, Lrms, fnonnat, IOU, _, _, _, CAPRI_interger, interface_index, correspondence, overlap = cal_similarity(model, native, args)
 
     label_dic['No'] = decoy_name
     label_dic['iRMS'] = irms
@@ -770,50 +817,84 @@ def calculate_gt_for_decoy(decoy_name, native, target_name, args, decoy_path):
     label_dic['IOU'] = IOU
     label_dic['CAPRI'] = CAPRI_interger
     label_dic['DockQ'] = DockQ
-    return label_dic
 
-def calculate_gt_for_target(decoy_name_folder, file_path, target_name, args, decoy_path):
+    #save decoy_interface pdb
+
+    # read interface residual info
+    parser = Bio.PDB.PDBParser(QUIET= True)
+    decoy_structure = parser.get_structure(decoy_name, os.path.join(decoy_path, target_name, decoy_name + '.fixed'))
+    io = Bio.PDB.PDBIO()
+    io.set_structure(decoy_structure)
+    if not os.path.exists(os.path.join(save_decoy_interface_folder,target_name)):
+        os.mkdir(os.path.join(save_decoy_interface_folder,target_name))
+    io.save(os.path.join(save_decoy_interface_folder, target_name, os.path.splitext(decoy_name)[0] + 'A.pdb'), interface_extraction(interface_index, 'A'))
+    io.save(os.path.join(save_decoy_interface_folder, target_name, os.path.splitext(decoy_name)[0] + 'B.pdb'), interface_extraction(interface_index, 'B'))
+
+    #parse the corresponding residues at model interface and their
+    for couple_residues in correspondence:
+        if (couple_residues in overlap) or \
+                ((couple_residues[1], couple_residues[0]) in overlap):
+            # positive binding
+            correspondence_gt.append((couple_residues[0], couple_residues[1], True))
+        else:
+            # negative binding
+            correspondence_gt.append((couple_residues[0], couple_residues[1], False))
+    del parser, decoy_structure, io, correspondence, overlap, model
+
+    return label_dic, {decoy_name : correspondence_gt}
+
+def calculate_gt_for_target(decoy_name_folder, file_path, target_name, args, decoy_path, save_decoy_interface_folder):
     print(target_name + ": start!")
     native = os.path.join(file_path, "all_pdb", target_name + ".pdb")
     args.native_chain1 = 'A'
     args.native_chain2 = 'B'
 
-    positive_decoy_name_path = os.path.join(decoy_name_folder, target_name + "_regression_score_label.csv")
-    pd.read_csv(positive_decoy_name_path)
-
-
-    with open(positive_decoy_name_path, 'r') as f:
-        scores_data_frame = pd.read_csv(f)
-        decoy_name_list = list(scores_data_frame['No'])
+    label_result_path = os.path.join(decoy_name_folder, target_name + "_regression_score_label.csv")
+    label_dataframe = pd.read_csv(label_result_path)
+    #
+    #
+    # with open(positive_decoy_name_path, 'r') as f:
+    # scores_data_frame = pd.read_csv(positive_decoy_name_path)
+    # decoy_name_list = list(scores_data_frame['No'])
 
     # for line in decoy_name_list:
     #     decoy_number = line.rstrip("\n").split(".")[1]
     #     decoy_number_list.append(decoy_number)
 
-
     label_list = []
-    for decoy_name in decoy_name_list:
-        label_list.append(calculate_gt_for_decoy(decoy_name, native, target_name, args, decoy_path))
+    correspondence_gt_list = {}
+    for decoy_name in label_dataframe.No.tolist():
+        if os.path.splitext(decoy_name)[1] == '.pdb':
+            labels, correspondence_gt = calculate_gt_for_decoy(decoy_name, native, target_name, args, decoy_path, save_decoy_interface_folder)
+            label_list.append(labels)
+            correspondence_gt_list.update(correspondence_gt)
+            del labels, correspondence_gt
     print('all decoys in target {:s} done, will save the results to csv file'.format(target_name))
     label_dataframe = pd.DataFrame(label_list)
-    label_path = os.path.join(file_path, target_name + "_regression_score_label.csv")
-    label_dataframe.to_csv(label_path, index=False)
-    del label_dataframe, label_list
+    # label_path = os.path.join(file_path, target_name + "_regression_score_label.csv")
+    label_dataframe.to_csv(label_result_path, index=False)
+    with open(os.path.splitext(label_result_path)[0] + '_correspondence.json', 'w') as fp:
+        json.dump(correspondence_gt_list, fp)
+    del label_dataframe, label_list,correspondence_gt_list
     print(target_name + ": end!")
 
 
-def calulate_ground_truth(target_name_list, file_path, args, decoy_path):
-    decoy_name_folder = r"/media/jiacheng/easystore/2_decoys_bm4_zd3.0.2_irad/5_decoy_name"
+def calulate_ground_truth(target_name_list, file_path, args, decoy_path,decoy_name_folder, save_decoy_interface_folder):
+
+
     # declare process pool
     core_num = cpu_count()
     pool = Pool(core_num)
 
     # selected_labels = [0]
     # selected_decoy_names = ['7CEI.complex.17314.pdb']
-    #target_name_list = ['7CEI']
+    # target_name_list = ['1ACB'] # residue start from 1
+    # target_name_list = ['1AK4']  # residue donot start from 1
+    # target_name_list = ['1KXP']  # residue start from 2000+
 
     for target_name in target_name_list:
-       pool.apply_async(calculate_gt_for_target, (decoy_name_folder, file_path, target_name, args, decoy_path))
+        # pool.apply_async(calculate_gt_for_target, (decoy_name_folder, file_path, target_name, args, decoy_path,save_decoy_interface_folder))
+        calculate_gt_for_target(decoy_name_folder, file_path, target_name, args, decoy_path, save_decoy_interface_folder)
 
     pool.close()
     pool.join()
@@ -859,14 +940,16 @@ if __name__ == '__main__':
     args.print =False
     args.skip_check = True
 
-    file_path = r"/media/jiacheng/easystore/2_decoys_bm4_zd3.0.2_irad/4_label"
-    decoy_path = r'/media/jiacheng/easystore/2_decoys_bm4_zd3.0.2_irad/3_pdb'
-    target_name_path = r"/media/jiacheng/easystore/2_decoys_bm4_zd3.0.2_irad/caseID.lst"
+    file_path = r"/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/4_label"
+    decoy_path = r'/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/3_pdb'
+    target_name_path = r"/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/caseID.lst"
+    decoy_name_folder = r"/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/5_decoy_name"
+    decoy_interface_folder = r'/home/fei/Research/Dataset/zdock_decoy/2_decoys_bm4_zd3.0.2_irad/14_interface_info/'
     target_name_list = []
     with open(target_name_path,'r') as f:
         for line in f:
             target_name_list.append(line.strip())
-    calulate_ground_truth(target_name_list, file_path,args,decoy_path)
+    calulate_ground_truth(target_name_list, file_path,args,decoy_path, decoy_name_folder, decoy_interface_folder)
     # queue = []
     # nproc=4
     # while 1:
