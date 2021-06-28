@@ -9,7 +9,7 @@ We presented a Deep Graph Attention Neural Network (DGANN) to evaluate and rank 
 
 **Flowchart of DGANN method.** 
  
-![](https://https://github.com/coffee19850519/PPDocking/tree/master/figure/Figure 1. Flowchart of our method.tif)   
+![](https://github.com/coffee19850519/PPDocking/blob/master/figure/FIG1.jpg)   
 
 The pipeline of DGANN includes three stages:  
 (1) Data preprocessing stage (in blue): The PDB files of candidate docking models were transformed into graph structures, where each node is a residue, and each edge connects the two residues carrying any atoms within 5 Å interatomic distance. Then, we encoded each residue (node) by its physico-chemical properties and conservation profiles (detailed in Method C). All candidate docking models were labeled as positive or negative samples according to the Critical Assessment of PRedicted Interactions (CAPRI) criteria (defined in Methods E). We split all collected protein complexes into training and test sets for 5-fold cross-validation.
@@ -20,7 +20,7 @@ The pipeline of DGANN includes three stages:
 
 **DGANN architecture.**  
 
-![](https://https://github.com/coffee19850519/PPDocking/tree/master/figure/Figure 2. DGANN architecture.tif)
+![](https://github.com/coffee19850519/PPDocking/blob/master/figure/FIG2.jpg)
 
  DGANN consists of three modules:  
 (1) GAT module: Docking models are first represented as graphs (blue nodes denote the residues from the protein in blue, and red nodes represent the residues from the protein in red), where the nodes have 26-dimensional attributes. Then, two stacked GAT layers are designed to model neighboring residue interactions and local structural information. For instance, the node embedding of GLU at the second GAT layer comes from the attention weighted aggregation of its neighbors ARG, PRO and VAL, whose embeddings are also aggregated by their neighbors at the first GAT layer. Through these processes, residue interactions from internal and external residues are modeled in each node embedding. Furthermore, at the first GAT layer, each aggregated node embedding is mapped to 32 dimensions, while at the second GAT layer the aggregated 32-dimensional node embeddings are mapped to a scalar for each node, which is deemed as the importance of the node over the whole graph.
