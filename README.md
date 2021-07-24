@@ -1,6 +1,7 @@
 # Deep Graph Attention Neural Network (DGANN) 
 
-![](<p align="center">< img height="300" width="700" src="https://github.com/coffee19850519/PPDocking/blob/master/figure/FIG1.jpg"></p>)
+<img src="https://github.com/coffee19850519/PPDocking/blob/master/figure/FIG1.jpg" width="700" height="300"/><br/>
+
 
 ## 1. Installation
 Start by grabbing this source codes:
