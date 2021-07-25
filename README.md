@@ -40,13 +40,17 @@ python import_data.py
 
  - Use the following file structure
       ```
-      raw_data/
-      |__pdb/
-      |__pssm/
-      |__node_feature/
-      |__caseID.lst
+      example/
+      |__data/
+      |__model/
+      |__raw_data/
+         |__pdb/
+         |__pssm/
+         |__node_feature/
+         |__caseID.lst
       ```
-   The `pdb` folder contains the PDB files of docking models, `pssm` contains the PSSM files, and `node_feature` contains the graph features files.
+   The `data` folder contains the processed data files , `model` contains the model files of docking models.
+   In `raw_data` folder, the `pdb` folder contains the PDB files of docking models, `pssm` contains the PSSM files, and `node_feature` contains the graph features files.
    The `caseID.lst` is a list of class ID and PDB file name for each docking model, like `7CEI`.
    
  - [Biopython](https://biopython.org/) can be used to process PDB file.
@@ -63,8 +67,7 @@ Then you should run `generate_node_feature.py` to generate side chain informatio
 python ./feature_extraction/generate_node_feature.py
 ```
 #### Test datasets
-Finally, you can use the model we prepared `example/model` folder with type:
+Finally, put data files in `example/data` and you can use the model we prepared `example/model` folder with type:
 ```
 python import_data.py
 ```
-
