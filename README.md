@@ -22,7 +22,21 @@ pip install -r requirements.txt
 ```
 
 ## 2. Examples
-### Requirements for preparing data:
+### Use our trained model
+
+You can directly use our trained model to score your docking conformations. 
+You can find the model in the package subfolder `/example/model/0fold_classification_model.pt`.
+You can find the data in the package subfolder `/example/data/0_classification_test.pt`.
+
+#### Quick start
+You can use data and model we prepared in `example/data` and `example/model` folder with type:
+```
+python import_data.py
+```
+
+### Test your own datasets
+
+#### Requirements for preparing data:
 
  - Use the following file structure
       ```
@@ -39,20 +53,7 @@ pip install -r requirements.txt
    [PSSMGen](https://github.com/DeepRank/PSSMGen) can be used to get consistent PSSM and PDB files. 
    There are already installed along with PPDock.
 
-### Use our trained model
-
-You can directly use our trained model to score your docking conformations. 
-You can find the model in the package subfolder `/example/model/0fold_classification_model.pt`.
-You can find the data in the package subfolder `/example/data/0_classification_test.pt`.
-
-#### Quick start
-You can use data and model we prepared in `example/data` and `example/model` folder with type:
-```
-python import_data.py
-```
-
-
-#### Test your own datasets
+#### Prepare datasets
 You should go into your `pssm_generating` folder and run `compute_pssm.py` to generate side chain information first.
 ```
 python compute_pssm.py
@@ -61,7 +62,7 @@ Then you should go into your `feature_extraction` folder and run `generate_node_
 ```
 python generate_node_feature.py
 ```
-
+#### Test datasets
 Finally, you can use the model we prepared `example/model` folder with type:
 ```
 python import_data.py
