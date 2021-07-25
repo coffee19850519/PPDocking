@@ -136,11 +136,11 @@ class PPDocking(InMemoryDataset):
         super(PPDocking, self).__init__(root, transform, pre_transform, pre_filter)
 
         if split == 'train':
-            self.data, self.slices = torch.load(r'/home/chenyb/dock/2_decoys_bm4_zd3.0.2_irad/10_graph_pt/1/{:d}_train_data.pt'.format(fold))
+            self.data, self.slices = torch.load(r'./example/data/{:d}_train_data.pt'.format(fold))
         elif split == 'val':
-            self.data, self.slices = torch.load(r'/home/chenyb/dock/2_decoys_bm4_zd3.0.2_irad/10_graph_pt/1/{:d}_val_data.pt'.format(fold))
+            self.data, self.slices = torch.load(r'/example/data/{:d}_val_data.pt'.format(fold))
         elif split == 'test':
-            self.data, self.slices = torch.load(r'/home/chenyb/dock/2_decoys_bm4_zd3.0.2_irad/10_graph_pt/1/{:d}_classification_test.pt'.format(fold))
+            self.data, self.slices = torch.load(r'/example/data/{:d}_classification_test.pt'.format(fold))
             # self.data, self.slices = torch.load(r'/home/chenyb/dock/classification_hop1/{:d}_test_data.pt'.format(fold))
 
     @property
@@ -345,7 +345,7 @@ if __name__ == '__main__':
 
 
         # start testing...
-        test_dataset = PPDocking(root=r'/home/chenyb/dock/data', split='test', fold=n, hop=args.hop, mode=args.mode)
+        test_dataset = PPDocking(root=r'./example/data', split='test', fold=n, hop=args.hop, mode=args.mode)
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False, num_workers=1)
 
