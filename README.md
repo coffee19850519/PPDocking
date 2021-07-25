@@ -54,13 +54,13 @@ python import_data.py
    There are already installed along with PPDock.
 
 #### Prepare datasets
-You should go into your `pssm_generating` folder and run `compute_pssm.py` to generate side chain information first.
+You should run `compute_pssm.py` to generate side chain information first.
 ```
-python compute_pssm.py
+python ./pssm_generating/compute_pssm.py
 ```
-Then you should go into your `feature_extraction` folder and run `generate_node_feature.py` to generate side chain information.
+Then you should run `generate_node_feature.py` to generate side chain information.
 ```
-python generate_node_feature.py
+python ./feature_extraction/generate_node_feature.py
 ```
 #### Test datasets
 Finally, you can use the model we prepared `example/model` folder with type:
