@@ -52,7 +52,7 @@ python import_data.py
 ```
 
 
-#### Prepare datasets
+#### Test your own datasets
 You should go into your `pssm_generating` folder and run `compute_pssm.py` to generate side chain information first.
 ```
 python compute_pssm.py
