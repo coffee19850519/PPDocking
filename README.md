@@ -67,8 +67,3 @@ Finally, you can use the model we prepared `example/model` folder with type:
 python import_data.py
 ```
 
-## 3. Citation
-If you use iScore software, please cite the following articles:
-```
-tex code
-```
