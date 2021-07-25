@@ -313,7 +313,7 @@ if __name__ == '__main__':
     train_summary = []
     all_mean_std = []
 
-    model_save_folder = r'/home/chenyb/dock/data/model'
+    model_save_folder = r'./model'
     for n in range(0, args.fold_num):
         print(str(n) + ' fold starts ... ...')
         #
